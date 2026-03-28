@@ -28,8 +28,8 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Edges, Center, Environment, ContactShadows, Bounds, useBounds, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import gsap from 'gsap';
-import { Part, Container, Pallet, PackingResult, Simulation, SessionResult, PackedCarton, PalletLoad } from './types';
-import { optimizePacking, packSessionSimulations } from './utils/packing';
+import { Part, Container, Pallet, PackingResult, Simulation, SessionResult, PackedBox, PalletLoad } from './types';
+import { optimizePacking, packSessionSimulations, suggestBestBox } from './utils/packing';
 import { exportToExcel } from './utils/export';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
@@ -39,18 +39,18 @@ function cn(...inputs: ClassValue[]) {
 }
 
 const STANDARD_PALLETS: Pallet[] = [
-  { id: 'euro', name: 'Euro Pallet (EPAL)', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000 },
-  { id: 'ind', name: 'Industrial Pallet', length: 1200, width: 1000, height: 150, maxWeight: 1500, maxHeight: 2000 },
-  { id: 'us', name: 'US Standard', length: 1219, width: 1016, height: 150, maxWeight: 1500, maxHeight: 2000 },
+  { id: 'euro', name: 'Euro Pallet (EPAL)', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 25 },
+  { id: 'ind', name: 'Industrial Pallet', length: 1200, width: 1000, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 30 },
+  { id: 'us', name: 'US Standard', length: 1219, width: 1016, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 35 },
 ];
 
 const INITIAL_PARTS: Part[] = [
-  { id: 'p1', name: 'Engine Component A', length: 120, width: 80, height: 60, weight: 1.2 },
-  { id: 'p2', name: 'Brake Pad Set', length: 200, width: 150, height: 50, weight: 2.5 },
+  { id: 'p1', name: 'Engine Component A', length: 120, width: 80, height: 60, weight: 1.2, orderQuantity: 1000 },
+  { id: 'p2', name: 'Brake Pad Set', length: 200, width: 150, height: 50, weight: 2.5, orderQuantity: 500 },
 ];
 
-const INITIAL_CARTONS: Container[] = [
-  { id: 'c1', name: 'Master Carton K3', length: 600, width: 400, height: 400, maxWeight: 25, emptyWeight: 0.8 },
+const INITIAL_BOXS: Container[] = [
+  { id: 'c1', name: 'Master Box K3', length: 600, width: 400, height: 400, maxWeight: 25, emptyWeight: 0.8 },
   { id: 'c2', name: 'Large Box XL', length: 800, width: 600, height: 500, maxWeight: 40, emptyWeight: 1.5 },
 ];
 
@@ -264,7 +264,7 @@ const PackingCanvas = ({
   viewMode, 
   targetView,
   part, 
-  carton, 
+  box, 
   pallet, 
   result,
   sessionResult,
@@ -272,10 +272,10 @@ const PackingCanvas = ({
   selectedSimulationId,
   onCapture
 }: { 
-  viewMode: 'pallet' | 'carton', 
+  viewMode: 'pallet' | 'box', 
   targetView: string,
   part: Part, 
-  carton: Container, 
+  box: Container, 
   pallet: Pallet, 
   result: PackingResult,
   sessionResult?: SessionResult,
@@ -286,7 +286,7 @@ const PackingCanvas = ({
   const scale = 0.01;
   const [selectedId, setSelectedId] = useState<string | number | null>(null);
 
-  // Find the simulation for carton view
+  // Find the simulation for box view
   const activeSim = useMemo(() => {
     if (sessionResult && selectedSimulationId) {
       return sessionResult.simulations.find(s => s.id === selectedSimulationId);
@@ -295,7 +295,7 @@ const PackingCanvas = ({
   }, [sessionResult, selectedSimulationId]);
 
   const currentPart = activeSim ? activeSim.part : part;
-  const currentCarton = activeSim ? activeSim.carton : carton;
+  const currentBox = activeSim ? activeSim.box : box;
   const currentResult = activeSim ? activeSim.result : result;
 
   return (
@@ -340,7 +340,7 @@ const PackingCanvas = ({
                         <group key={palletIdx} position={[offsetX, 0, offsetZ]}>
                           <PalletMesh pallet={pallet} />
                           <group position={[-pallet.length * scale / 2, 0, -pallet.width * scale / 2]}>
-                            {pLoad.cartons.map((c, i) => (
+                            {pLoad.boxes.map((c, i) => (
                               <MeshBox 
                                 key={i}
                                 position={[c.x * scale + c.length * scale / 2, c.z * scale + c.height * scale / 2, c.y * scale + c.width * scale / 2]}
@@ -370,7 +370,7 @@ const PackingCanvas = ({
                       const offsetZ = row * (pallet.width * scale + spacing);
                       
                       const isLast = palletIdx === result.totalPalletsNeeded - 1;
-                      const countOnThisPallet = isLast ? result.lastPalletCartons : result.cartonsPerPalletBalanced;
+                      const countOnThisPallet = isLast ? result.lastPalletBoxes : result.boxesPerPalletBalanced;
                       
                       const [l, w, h] = result.orientations.pallet.split('x').map(Number);
                       const cw = l * scale;
@@ -379,10 +379,14 @@ const PackingCanvas = ({
                       const nx = result.palletGrid.nx;
                       const ny = result.palletGrid.ny;
 
+                      // Calculate actual footprint for centering
+                      const actualNx = Math.min(nx, countOnThisPallet);
+                      const actualNy = Math.min(ny, Math.ceil(countOnThisPallet / nx));
+
                       return (
                         <group key={palletIdx} position={[offsetX, 0, offsetZ]}>
                           <PalletMesh pallet={pallet} />
-                          <group position={[-(nx * cw) / 2, 0, -(ny * cd) / 2]}>
+                          <group position={[-(actualNx * cw) / 2, 0, -(actualNy * cd) / 2]}>
                             {Array.from({ length: countOnThisPallet }).map((_, i) => {
                               const ix = i % nx;
                               const iy = Math.floor(i / nx) % ny;
@@ -411,25 +415,25 @@ const PackingCanvas = ({
               </group>
             ) : (
               <group onClick={() => setSelectedId(null)}>
-                {/* Carton Shell */}
-                <mesh position={[0, currentCarton.height * scale / 2, 0]}>
-                  <boxGeometry args={[currentCarton.length * scale, currentCarton.height * scale, currentCarton.width * scale]} />
+                {/* Box Shell */}
+                <mesh position={[0, currentBox.height * scale / 2, 0]}>
+                  <boxGeometry args={[currentBox.length * scale, currentBox.height * scale, currentBox.width * scale]} />
                   <meshStandardMaterial color="#fdba74" transparent opacity={0.1} side={THREE.DoubleSide} />
                   <Edges color="#f97316" />
                 </mesh>
 
                 {/* Parts */}
                 {(() => {
-                  const [l, w, h] = currentResult.orientations.carton.split('x').map(Number);
+                  const [l, w, h] = currentResult.orientations.box.split('x').map(Number);
                   const pw = l * scale;
                   const pd = w * scale;
                   const ph = h * scale;
-                  const nx = currentResult.cartonGrid.nx;
-                  const ny = currentResult.cartonGrid.ny;
+                  const nx = currentResult.boxGrid.nx;
+                  const ny = currentResult.boxGrid.ny;
 
                   return (
                     <group position={[-(nx * pw) / 2, 0, -(ny * pd) / 2]}>
-                      {Array.from({ length: currentResult.partsPerCarton }).map((_, i) => {
+                      {Array.from({ length: currentResult.partsPerBox }).map((_, i) => {
                         const ix = i % nx;
                         const iy = Math.floor(i / nx) % ny;
                         const iz = Math.floor(i / (nx * ny));
@@ -477,7 +481,7 @@ const PackingCanvas = ({
           >
             <div className="flex justify-between items-start mb-2">
               <h4 className="font-bold text-sm text-zinc-900">
-                {viewMode === 'pallet' ? `Carton ${selectedId}` : `Part #${Number(selectedId) + 1}`}
+                {viewMode === 'pallet' ? `Box ${selectedId}` : `Part #${Number(selectedId) + 1}`}
               </h4>
               <button onClick={() => setSelectedId(null)} className="text-zinc-400 hover:text-zinc-600">
                 <Trash2 size={14} />
@@ -488,8 +492,8 @@ const PackingCanvas = ({
                 <span className="text-zinc-500">Position:</span>
                 <span className="font-mono text-zinc-700">
                   {(() => {
-                    const nx = viewMode === 'pallet' ? result.palletGrid.nx : result.cartonGrid.nx;
-                    const ny = viewMode === 'pallet' ? result.palletGrid.ny : result.cartonGrid.ny;
+                    const nx = viewMode === 'pallet' ? result.palletGrid.nx : result.boxGrid.nx;
+                    const ny = viewMode === 'pallet' ? result.palletGrid.ny : result.boxGrid.ny;
                     
                     let id = 0;
                     if (typeof selectedId === 'string' && selectedId.includes('-c')) {
@@ -508,13 +512,13 @@ const PackingCanvas = ({
               <div className="flex justify-between">
                 <span className="text-zinc-500">Type:</span>
                 <span className="font-medium text-zinc-700">
-                  {viewMode === 'pallet' ? carton.name : part.name}
+                  {viewMode === 'pallet' ? box.name : part.name}
                 </span>
               </div>
               <div className="flex justify-between">
                 <span className="text-zinc-500">Dimensions:</span>
                 <span className="font-medium text-zinc-700">
-                  {viewMode === 'pallet' ? result.orientations.pallet : result.orientations.carton} mm
+                  {viewMode === 'pallet' ? result.orientations.pallet : result.orientations.box} mm
                 </span>
               </div>
             </div>
@@ -534,12 +538,11 @@ const PackingCanvas = ({
 
 export default function App() {
   const [parts, setParts] = useState<Part[]>(INITIAL_PARTS);
-  const [cartons, setCartons] = useState<Container[]>(INITIAL_CARTONS);
+  const [boxes, setBoxes] = useState<Container[]>(INITIAL_BOXS);
   const [selectedPartId, setSelectedPartId] = useState<string>(INITIAL_PARTS[0].id);
-  const [selectedCartonId, setSelectedCartonId] = useState<string>(INITIAL_CARTONS[0].id);
+  const [selectedBoxId, setSelectedBoxId] = useState<string>(INITIAL_BOXS[0].id);
   const [pallet, setPallet] = useState<Pallet>(STANDARD_PALLETS[0]);
-  const [totalOrder, setTotalOrder] = useState<number>(1000);
-  const [viewMode, setViewMode] = useState<'pallet' | 'carton'>('pallet');
+  const [viewMode, setViewMode] = useState<'pallet' | 'box'>('pallet');
   const [targetView, setTargetView] = useState<string>('perspective');
   const [selectedPalletIndex, setSelectedPalletIndex] = useState<number | null>(null);
   const [selectedSimulationId, setSelectedSimulationId] = useState<string | null>(null);
@@ -549,16 +552,16 @@ export default function App() {
   const [sessionResult, setSessionResult] = useState<SessionResult | null>(null);
 
   const part = useMemo(() => parts.find(p => p.id === selectedPartId) || parts[0], [parts, selectedPartId]);
-  const carton = useMemo(() => cartons.find(c => c.id === selectedCartonId) || cartons[0], [cartons, selectedCartonId]);
+  const box = useMemo(() => boxes.find(c => c.id === selectedBoxId) || boxes[0], [boxes, selectedBoxId]);
 
-  const result = useMemo(() => optimizePacking(part, carton, pallet, totalOrder), [part, carton, pallet, totalOrder]);
+  const result = useMemo(() => optimizePacking(part, box, pallet, part.orderQuantity), [part, box, pallet, part.orderQuantity]);
 
   const addSimulationToSession = () => {
     const newSim: Simulation = {
       id: Math.random().toString(36).substr(2, 9),
       part,
-      carton,
-      quantity: totalOrder,
+      box,
+      quantity: part.orderQuantity,
       result
     };
     const newSims = [...simulations, newSim];
@@ -604,26 +607,25 @@ export default function App() {
     }
   };
 
-  const [exportStep, setExportStep] = useState<'idle' | 'pallet' | 'carton' | 'final'>('idle');
+  const [exportStep, setExportStep] = useState<'idle' | 'pallet' | 'box' | 'final'>('idle');
   const [palletImage, setPalletImage] = useState<string | undefined>();
-  const [cartonImage, setCartonImage] = useState<string | undefined>();
+  const [boxImage, setBoxImage] = useState<string | undefined>();
 
   useEffect(() => {
-    if (exportStep === 'final' && palletImage && cartonImage) {
-      exportToExcel(part, carton, pallet, result, totalOrder, palletImage, cartonImage, simulations, sessionResult);
+    if (exportStep === 'final' && palletImage && boxImage) {
+      exportToExcel(part, box, pallet, result, part.orderQuantity, palletImage, boxImage, simulations, sessionResult);
       setExportStep('idle');
       setPalletImage(undefined);
-      setCartonImage(undefined);
+      setBoxImage(undefined);
     }
-  }, [exportStep, palletImage, cartonImage, part, carton, pallet, result, totalOrder, simulations, sessionResult]);
+  }, [exportStep, palletImage, boxImage, part, box, pallet, result, simulations, sessionResult]);
 
   const handleReset = () => {
     setParts(INITIAL_PARTS);
-    setCartons(INITIAL_CARTONS);
+    setBoxes(INITIAL_BOXS);
     setSelectedPartId(INITIAL_PARTS[0].id);
-    setSelectedCartonId(INITIAL_CARTONS[0].id);
+    setSelectedBoxId(INITIAL_BOXS[0].id);
     setPallet(STANDARD_PALLETS[0]);
-    setTotalOrder(1000);
   };
 
   const addPart = () => {
@@ -633,24 +635,31 @@ export default function App() {
       length: 100,
       width: 100,
       height: 100,
-      weight: 1.0
+      weight: 1.0,
+      orderQuantity: 100
     };
     setParts([...parts, newPart]);
     setSelectedPartId(newPart.id);
   };
 
-  const addCarton = () => {
-    const newCarton: Container = {
+  const addBox = () => {
+    const newBox: Container = {
       id: Math.random().toString(36).substr(2, 9),
-      name: 'New Carton',
+      name: 'New Box',
       length: 500,
       width: 400,
       height: 300,
       maxWeight: 20,
       emptyWeight: 0.5
     };
-    setCartons([...cartons, newCarton]);
-    setSelectedCartonId(newCarton.id);
+    setBoxes([...boxes, newBox]);
+    setSelectedBoxId(newBox.id);
+  };
+
+  const handleSuggestBestBox = () => {
+    const bestBox = suggestBestBox(part, pallet);
+    setBoxes([...boxes, bestBox]);
+    setSelectedBoxId(bestBox.id);
   };
 
   const deletePart = (id: string) => {
@@ -660,34 +669,38 @@ export default function App() {
     if (selectedPartId === id) setSelectedPartId(newParts[0].id);
   };
 
-  const deleteCarton = (id: string) => {
-    if (cartons.length <= 1) return;
-    const newCartons = cartons.filter(c => c.id !== id);
-    setCartons(newCartons);
-    if (selectedCartonId === id) setSelectedCartonId(newCartons[0].id);
+  const deleteBox = (id: string) => {
+    if (boxes.length <= 1) return;
+    const newBoxes = boxes.filter(c => c.id !== id);
+    setBoxes(newBoxes);
+    if (selectedBoxId === id) setSelectedBoxId(newBoxes[0].id);
   };
 
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <header className="h-16 border-b border-zinc-200 bg-white flex items-center px-6 sticky top-0 z-50">
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-emerald-600 rounded-lg flex items-center justify-center text-white">
-            <Package size={20} />
-          </div>
-          <h1 className="font-bold text-lg tracking-tight">PackMaster <span className="text-emerald-600">Pro</span></h1>
+      <header className="h-16 bg-black text-white flex items-center px-6 sticky top-0 z-50">
+        <div className="flex items-center gap-3">
+          <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M5 20 L95 50 L20 90 Z" fill="white" />
+            <path d="M5 20 Q 25 45 40 50" stroke="black" strokeWidth="3" fill="none" />
+            <path d="M20 90 Q 35 70 40 50" stroke="black" strokeWidth="3" fill="none" />
+            <path d="M95 50 Q 70 45 40 50" stroke="black" strokeWidth="3" fill="none" />
+            <path d="M5 20 Q 25 55 20 90" stroke="black" strokeWidth="3" fill="none" />
+          </svg>
+          <h1 className="font-light text-2xl tracking-[0.2em] mt-1">DIAM</h1>
         </div>
         <div className="ml-auto flex items-center gap-4">
           <button 
             onClick={handleReset}
-            className="text-zinc-500 hover:text-zinc-900 transition-colors flex items-center gap-1 text-sm font-medium"
+            className="text-zinc-400 hover:text-white transition-colors flex items-center gap-1 text-sm font-medium"
           >
             <RefreshCw size={14} />
             Reset
           </button>
           <button 
             onClick={handleExport}
-            className="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-all shadow-sm active:scale-95"
+            className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-all shadow-sm active:scale-95"
           >
             <Download size={16} />
             Export Report
@@ -798,67 +811,91 @@ export default function App() {
                   />
                 </div>
               </div>
-              <div>
-                <label className="label-text">Unit Weight (kg)</label>
-                <div className="relative">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label-text">Unit Weight (kg)</label>
+                  <div className="relative">
+                    <input 
+                      type="number" 
+                      value={part.weight} 
+                      onChange={e => {
+                        const newParts = parts.map(p => p.id === selectedPartId ? {...p, weight: Number(e.target.value)} : p);
+                        setParts(newParts);
+                      }}
+                      className="input-field pr-10"
+                    />
+                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
+                      <Weight size={14} />
+                    </div>
+                  </div>
+                </div>
+                <div>
+                  <label className="label-text">Total Order Qty</label>
                   <input 
                     type="number" 
-                    value={part.weight} 
+                    value={part.orderQuantity} 
                     onChange={e => {
-                      const newParts = parts.map(p => p.id === selectedPartId ? {...p, weight: Number(e.target.value)} : p);
+                      const newParts = parts.map(p => p.id === selectedPartId ? {...p, orderQuantity: Number(e.target.value)} : p);
                       setParts(newParts);
                     }}
-                    className="input-field pr-10"
+                    className="input-field"
+                    min="1"
                   />
-                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
-                    <Weight size={14} />
-                  </div>
                 </div>
               </div>
             </div>
           </section>
 
-          {/* Carton Library */}
+          {/* Box Library */}
           <section className="glass-panel p-5">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <div className="p-1.5 bg-orange-50 text-orange-600 rounded-md">
                   <Layers size={18} />
                 </div>
-                <h2 className="font-semibold text-zinc-900">Carton Library</h2>
+                <h2 className="font-semibold text-zinc-900">Box Library</h2>
               </div>
-              <button 
-                onClick={addCarton}
-                className="p-1.5 hover:bg-zinc-100 rounded-lg text-zinc-500 transition-colors"
-                title="Add New Carton"
-              >
-                <Plus size={18} />
-              </button>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={handleSuggestBestBox}
+                  className="px-3 py-1.5 bg-orange-100 hover:bg-orange-200 text-orange-700 text-xs font-medium rounded-lg transition-colors"
+                  title="Suggest Best Box for selected part"
+                >
+                  Suggest Best
+                </button>
+                <button 
+                  onClick={addBox}
+                  className="p-1.5 hover:bg-zinc-100 rounded-lg text-zinc-500 transition-colors"
+                  title="Add New Box"
+                >
+                  <Plus size={18} />
+                </button>
+              </div>
             </div>
 
             <div className="space-y-3 mb-6 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
-              {cartons.map(c => (
+              {boxes.map(c => (
                 <div 
                   key={c.id}
                   className={cn(
                     "group flex items-center justify-between p-2 rounded-lg border transition-all cursor-pointer",
-                    selectedCartonId === c.id 
+                    selectedBoxId === c.id 
                       ? "border-orange-500 bg-orange-50/50" 
                       : "border-zinc-100 hover:border-zinc-200"
                   )}
-                  onClick={() => setSelectedCartonId(c.id)}
+                  onClick={() => setSelectedBoxId(c.id)}
                 >
                   <div className="flex items-center gap-3">
                     <div className={cn(
                       "w-4 h-4 rounded-full border flex items-center justify-center",
-                      selectedCartonId === c.id ? "border-orange-500 bg-orange-500" : "border-zinc-300"
+                      selectedBoxId === c.id ? "border-orange-500 bg-orange-500" : "border-zinc-300"
                     )}>
-                      {selectedCartonId === c.id && <Check size={10} className="text-white" />}
+                      {selectedBoxId === c.id && <Check size={10} className="text-white" />}
                     </div>
                     <span className="text-sm font-medium text-zinc-700">{c.name}</span>
                   </div>
                   <button 
-                    onClick={(e) => { e.stopPropagation(); deleteCarton(c.id); }}
+                    onClick={(e) => { e.stopPropagation(); deleteBox(c.id); }}
                     className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 transition-all"
                   >
                     <Trash2 size={14} />
@@ -869,13 +906,13 @@ export default function App() {
 
             <div className="space-y-4 pt-4 border-t border-zinc-100">
               <div>
-                <label className="label-text">Carton Name</label>
+                <label className="label-text">Box Name</label>
                 <input 
                   type="text" 
-                  value={carton.name} 
+                  value={box.name} 
                   onChange={e => {
-                    const newCartons = cartons.map(c => c.id === selectedCartonId ? {...c, name: e.target.value} : c);
-                    setCartons(newCartons);
+                    const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, name: e.target.value} : c);
+                    setBoxes(newBoxes);
                   }}
                   className="input-field"
                 />
@@ -885,10 +922,10 @@ export default function App() {
                   <label className="label-text">Length (mm)</label>
                   <input 
                     type="number" 
-                    value={carton.length} 
+                    value={box.length} 
                     onChange={e => {
-                      const newCartons = cartons.map(c => c.id === selectedCartonId ? {...c, length: Number(e.target.value)} : c);
-                      setCartons(newCartons);
+                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, length: Number(e.target.value)} : c);
+                      setBoxes(newBoxes);
                     }}
                     className="input-field"
                   />
@@ -897,10 +934,10 @@ export default function App() {
                   <label className="label-text">Width (mm)</label>
                   <input 
                     type="number" 
-                    value={carton.width} 
+                    value={box.width} 
                     onChange={e => {
-                      const newCartons = cartons.map(c => c.id === selectedCartonId ? {...c, width: Number(e.target.value)} : c);
-                      setCartons(newCartons);
+                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, width: Number(e.target.value)} : c);
+                      setBoxes(newBoxes);
                     }}
                     className="input-field"
                   />
@@ -909,10 +946,10 @@ export default function App() {
                   <label className="label-text">Height (mm)</label>
                   <input 
                     type="number" 
-                    value={carton.height} 
+                    value={box.height} 
                     onChange={e => {
-                      const newCartons = cartons.map(c => c.id === selectedCartonId ? {...c, height: Number(e.target.value)} : c);
-                      setCartons(newCartons);
+                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, height: Number(e.target.value)} : c);
+                      setBoxes(newBoxes);
                     }}
                     className="input-field"
                   />
@@ -923,10 +960,10 @@ export default function App() {
                   <label className="label-text">Max Weight (kg)</label>
                   <input 
                     type="number" 
-                    value={carton.maxWeight} 
+                    value={box.maxWeight} 
                     onChange={e => {
-                      const newCartons = cartons.map(c => c.id === selectedCartonId ? {...c, maxWeight: Number(e.target.value)} : c);
-                      setCartons(newCartons);
+                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, maxWeight: Number(e.target.value)} : c);
+                      setBoxes(newBoxes);
                     }}
                     className="input-field"
                   />
@@ -935,10 +972,10 @@ export default function App() {
                   <label className="label-text">Empty Weight (kg)</label>
                   <input 
                     type="number" 
-                    value={carton.emptyWeight} 
+                    value={box.emptyWeight} 
                     onChange={e => {
-                      const newCartons = cartons.map(c => c.id === selectedCartonId ? {...c, emptyWeight: Number(e.target.value)} : c);
-                      setCartons(newCartons);
+                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, emptyWeight: Number(e.target.value)} : c);
+                      setBoxes(newBoxes);
                     }}
                     className="input-field"
                   />
@@ -1017,20 +1054,10 @@ export default function App() {
               <h2 className="font-semibold text-zinc-900">Shipment Planning</h2>
             </div>
             <div className="space-y-4">
-              <div>
-                <label className="label-text">Total Order Quantity (Parts)</label>
-                <input 
-                  type="number" 
-                  value={totalOrder} 
-                  onChange={e => setTotalOrder(Number(e.target.value))}
-                  className="input-field"
-                  min="1"
-                />
-              </div>
               <div className="p-3 bg-zinc-50 rounded-lg border border-zinc-100 space-y-2">
                 <div className="flex justify-between text-xs">
-                  <span className="text-zinc-500">Total Cartons to Order:</span>
-                  <span className="font-bold text-zinc-900">{result.totalCartonsNeeded}</span>
+                  <span className="text-zinc-500">Total Boxes to Order:</span>
+                  <span className="font-bold text-zinc-900">{result.totalBoxesNeeded}</span>
                 </div>
                 <div className="flex justify-between text-xs">
                   <span className="text-zinc-500">Total Pallets Needed:</span>
@@ -1070,7 +1097,7 @@ export default function App() {
                       </div>
                       <div>
                         <div className="text-xs font-bold text-zinc-900">{sim.part.name}</div>
-                        <div className="text-[10px] text-zinc-500">{sim.result.totalCartonsNeeded} cartons • {sim.quantity} parts</div>
+                        <div className="text-[10px] text-zinc-500">{sim.result.totalBoxesNeeded} boxes • {sim.quantity} parts</div>
                       </div>
                     </div>
                     <button 
@@ -1108,13 +1135,13 @@ export default function App() {
               className="glass-panel p-5 border-l-4 border-l-blue-500"
             >
               <div className="text-xs font-bold text-zinc-400 uppercase mb-1">
-                {sessionResult ? 'Total Cartons' : 'Parts per Carton'}
+                {sessionResult ? 'Total Boxes' : 'Parts per Box'}
               </div>
               <div className="text-3xl font-bold text-zinc-900">
-                {sessionResult ? sessionResult.totalCartons : result.partsPerCarton}
+                {sessionResult ? sessionResult.totalBoxes : result.partsPerBox}
               </div>
               <div className="text-xs text-zinc-500 mt-1">
-                {sessionResult ? 'Across all simulations' : `Utilization: ${(result.cartonVolumeUtilization * 100).toFixed(1)}%`}
+                {sessionResult ? 'Across all simulations' : `Utilization: ${(result.boxVolumeUtilization * 100).toFixed(1)}%`}
               </div>
             </motion.div>
             <motion.div 
@@ -1124,11 +1151,11 @@ export default function App() {
               className="glass-panel p-5 border-l-4 border-l-orange-500"
             >
               <div className="text-xs font-bold text-zinc-400 uppercase mb-1">
-                {sessionResult ? 'Total Pallets' : 'Cartons per Pallet'}
+                {sessionResult ? 'Total Pallets' : 'Boxes per Pallet'}
               </div>
               <div className="text-3xl font-bold text-zinc-900">
-                {sessionResult ? sessionResult.pallets.length : Math.min(result.totalCartonsNeeded, result.cartonsPerPallet)}
-                {!sessionResult && <span className="text-sm text-zinc-400 font-normal ml-2">/ {result.cartonsPerPallet} max</span>}
+                {sessionResult ? sessionResult.pallets.length : Math.min(result.totalBoxesNeeded, result.boxesPerPallet)}
+                {!sessionResult && <span className="text-sm text-zinc-400 font-normal ml-2">/ {result.boxesPerPallet} max</span>}
               </div>
               <div className="text-xs text-zinc-500 mt-1">
                 Utilization: <span className="font-semibold text-emerald-600">
@@ -1174,13 +1201,13 @@ export default function App() {
                     Pallet View
                   </button>
                   <button 
-                    onClick={() => setViewMode('carton')}
+                    onClick={() => setViewMode('box')}
                     className={cn(
                       "px-3 py-1 text-[10px] font-bold uppercase rounded-md transition-all",
-                      viewMode === 'carton' ? "bg-white text-blue-600 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
+                      viewMode === 'box' ? "bg-white text-blue-600 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
                     )}
                   >
-                    Carton View
+                    Box View
                   </button>
                 </div>
               </div>
@@ -1222,7 +1249,7 @@ export default function App() {
                   </div>
                 )}
 
-                {viewMode === 'carton' && sessionResult && (
+                {viewMode === 'box' && sessionResult && (
                   <div className="bg-white/80 backdrop-blur-md p-2 rounded-xl border border-zinc-200 shadow-sm space-y-2">
                     <div className="text-[10px] font-bold text-zinc-400 uppercase px-1">Simulation Selection</div>
                     <div className="flex flex-col gap-1 max-h-[150px] overflow-y-auto custom-scrollbar">
@@ -1247,7 +1274,7 @@ export default function App() {
                 viewMode={viewMode}
                 targetView={targetView}
                 part={part}
-                carton={carton}
+                box={box}
                 pallet={pallet}
                 result={result}
                 sessionResult={sessionResult || undefined}
@@ -1272,31 +1299,31 @@ export default function App() {
                           viewMode="pallet"
                           targetView="perspective"
                           part={part}
-                          carton={carton}
+                          box={box}
                           pallet={pallet}
                           result={result}
                           selectedPalletIndex={null}
                           selectedSimulationId={null}
                           onCapture={(img) => {
                             setPalletImage(img);
-                            setExportStep('carton');
+                            setExportStep('box');
                           }}
                         />
                       </div>
                     )}
-                    {exportStep === 'carton' && (
+                    {exportStep === 'box' && (
                       <div className="w-[800px] h-[600px]">
                         <PackingCanvas 
-                          viewMode="carton"
+                          viewMode="box"
                           targetView="perspective"
                           part={part}
-                          carton={carton}
+                          box={box}
                           pallet={pallet}
                           result={result}
                           selectedPalletIndex={null}
                           selectedSimulationId={null}
                           onCapture={(img) => {
-                            setCartonImage(img);
+                            setBoxImage(img);
                             setExportStep('final');
                           }}
                         />
@@ -1340,14 +1367,14 @@ export default function App() {
                 <div className="flex gap-6">
                   <div className="space-y-1">
                     <div className="text-[10px] font-bold text-zinc-400 uppercase">
-                      {viewMode === 'pallet' ? 'Container' : 'Master Carton'}
+                      {viewMode === 'pallet' ? 'Container' : 'Master Box'}
                     </div>
                     <div className="flex items-center gap-2 text-xs font-medium text-zinc-700">
                       <div className={cn(
                         "w-3 h-3 rounded-sm border",
                         viewMode === 'pallet' ? "bg-amber-800 border-amber-900" : "bg-orange-100 border-orange-400"
                       )} />
-                      <span>{viewMode === 'pallet' ? pallet.name : carton.name}</span>
+                      <span>{viewMode === 'pallet' ? pallet.name : box.name}</span>
                     </div>
                   </div>
                   <div className="space-y-1">
@@ -1359,7 +1386,7 @@ export default function App() {
                         "w-3 h-3 rounded-sm border",
                         viewMode === 'pallet' ? "bg-orange-200 border-orange-400" : "bg-blue-400 border-blue-600"
                       )} />
-                      <span>{viewMode === 'pallet' ? carton.name : part.name}</span>
+                      <span>{viewMode === 'pallet' ? box.name : part.name}</span>
                     </div>
                   </div>
                 </div>
@@ -1368,7 +1395,7 @@ export default function App() {
                   <div className="text-sm font-mono font-bold text-emerald-600">
                     {viewMode === 'pallet' 
                       ? `${result.palletGrid.nx} × ${result.palletGrid.ny} × ${result.palletGrid.nz}`
-                      : `${result.cartonGrid.nx} × ${result.cartonGrid.ny} × ${result.cartonGrid.nz}`
+                      : `${result.boxGrid.nx} × ${result.boxGrid.ny} × ${result.boxGrid.nz}`
                     }
                   </div>
                 </div>
@@ -1386,25 +1413,25 @@ export default function App() {
             <section className="glass-panel p-5">
               <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
                 <Info size={14} className="text-blue-500" />
-                Carton Efficiency
+                Box Efficiency
               </h3>
               <div className="space-y-3">
                 <div className="flex justify-between text-sm">
                   <span className="text-zinc-500">Gross Weight</span>
-                  <span className="font-medium">{result.cartonWeight.toFixed(2)} kg</span>
+                  <span className="font-medium">{result.boxWeight.toFixed(2)} kg</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-zinc-500">Net Weight (Parts)</span>
-                  <span className="font-medium">{(result.partsPerCarton * part.weight).toFixed(2)} kg</span>
+                  <span className="font-medium">{(result.partsPerBox * part.weight).toFixed(2)} kg</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-zinc-500">Volume Used</span>
-                  <span className="font-medium">{(result.cartonVolumeUtilization * 100).toFixed(1)}%</span>
+                  <span className="font-medium">{(result.boxVolumeUtilization * 100).toFixed(1)}%</span>
                 </div>
                 <div className="w-full bg-zinc-100 h-2 rounded-full overflow-hidden mt-2">
                   <motion.div 
                     initial={{ width: 0 }}
-                    animate={{ width: `${result.cartonVolumeUtilization * 100}%` }}
+                    animate={{ width: `${result.boxVolumeUtilization * 100}%` }}
                     className="h-full bg-blue-500"
                   />
                 </div>
@@ -1420,6 +1447,16 @@ export default function App() {
                 <div className="flex justify-between text-sm">
                   <span className="text-zinc-500">Total Weight (Full)</span>
                   <span className="font-medium">{result.palletWeight.toFixed(1)} kg</span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-zinc-500">Total Shipment Weight</span>
+                  <span className="font-medium text-emerald-600">
+                    {((result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded) * result.balancedPalletWeight + (result.isLastPalletDifferent ? result.lastPalletWeight : 0)).toFixed(1)} kg
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-zinc-500">Load Dimensions</span>
+                  <span className="font-medium">{Math.round(result.loadDimensions.length)} x {Math.round(result.loadDimensions.width)} x {Math.round(result.loadDimensions.height)} mm</span>
                 </div>
                 <div className="flex justify-between text-sm">
                   <span className="text-zinc-500">Weight Capacity Used</span>
@@ -1442,7 +1479,7 @@ export default function App() {
             <section className="glass-panel p-5 md:col-span-2">
               <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
                 <Truck size={14} className="text-emerald-500" />
-                Balanced Distribution per Pallet
+                Pallet Distribution
               </h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                 <div className="space-y-4">
@@ -1457,8 +1494,8 @@ export default function App() {
                       </div>
                     </div>
                     <div className="text-right">
-                      <div className="text-[10px] font-bold text-emerald-600 uppercase">Cartons / Pallet</div>
-                      <div className="text-2xl font-bold text-emerald-900">{result.cartonsPerPalletBalanced}</div>
+                      <div className="text-[10px] font-bold text-emerald-600 uppercase">Boxes / Pallet</div>
+                      <div className="text-2xl font-bold text-emerald-900">{result.boxesPerPalletBalanced}</div>
                     </div>
                   </div>
                   
@@ -1472,8 +1509,8 @@ export default function App() {
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-[10px] font-bold text-amber-600 uppercase">Cartons / Pallet</div>
-                        <div className="text-2xl font-bold text-amber-900">{result.lastPalletCartons}</div>
+                        <div className="text-[10px] font-bold text-amber-600 uppercase">Boxes / Pallet</div>
+                        <div className="text-2xl font-bold text-amber-900">{result.lastPalletBoxes}</div>
                       </div>
                     </div>
                   )}
@@ -1491,8 +1528,8 @@ export default function App() {
                       {result.totalPalletsNeeded > 1 && (
                         <p className="text-[10px] text-zinc-500 italic">
                           {result.isLastPalletDifferent 
-                            ? `Pełna paleta: ${result.cartonsPerPalletBalanced} kartonów. Ostatnia paleta: ${result.lastPalletCartons} kartonów.`
-                            : `Każda paleta zawiera ${result.cartonsPerPalletBalanced} kartonów.`
+                            ? `Pełna paleta: ${result.boxesPerPalletBalanced} boxów. Ostatnia paleta: ${result.lastPalletBoxes} boxów.`
+                            : `Każda paleta zawiera ${result.boxesPerPalletBalanced} boxów.`
                           }
                         </p>
                       )}
@@ -1504,12 +1541,12 @@ export default function App() {
                     </div>
                     <div className="space-y-1">
                       <p className="text-xs text-zinc-600 leading-relaxed">
-                        Należy zamówić łącznie <span className="font-bold text-zinc-900">{result.totalCartonsNeeded}</span> kartonów typu <span className="italic">{carton.name}</span>.
+                        Należy zamówić łącznie <span className="font-bold text-zinc-900">{result.totalBoxesNeeded}</span> kartonów typu <span className="italic">{box.name}</span>.
                       </p>
                       <p className="text-[10px] text-zinc-500 italic">
-                        {result.isLastCartonDifferent
-                          ? `Pełny karton: ${result.partsPerCarton} szt. Ostatni karton: ${result.partsInLastCarton} szt.`
-                          : `Każdy karton zawiera ${result.partsPerCarton} sztuk części.`
+                        {result.isLastBoxDifferent
+                          ? `Pełny karton: ${result.partsPerBox} szt. Ostatni karton: ${result.partsInLastBox} szt.`
+                          : `Każdy karton zawiera ${result.partsPerBox} sztuk części.`
                         }
                       </p>
                     </div>

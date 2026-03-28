@@ -8,6 +8,7 @@ export interface Part extends Dimensions {
   id: string;
   name: string;
   weight: number; // in kg
+  orderQuantity: number;
 }
 
 export interface Container extends Dimensions {
@@ -22,45 +23,47 @@ export interface Pallet extends Dimensions {
   name: string;
   maxWeight: number; // in kg
   maxHeight: number; // in cm (including pallet)
+  emptyWeight: number; // in kg
 }
 
 export interface PackingResult {
-  partsPerCarton: number;
-  cartonsPerPallet: number;
+  partsPerBox: number;
+  boxesPerPallet: number;
   totalPartsPerPallet: number;
-  cartonWeight: number;
+  boxWeight: number;
   palletWeight: number;
-  cartonVolumeUtilization: number;
+  boxVolumeUtilization: number;
   palletVolumeUtilization: number;
   orientations: {
-    carton: string;
+    box: string;
     pallet: string;
   };
   // Grid dimensions for visualization
-  cartonGrid: { nx: number; ny: number; nz: number };
+  boxGrid: { nx: number; ny: number; nz: number };
   palletGrid: { nx: number; ny: number; nz: number };
   // Shipment details
-  totalCartonsNeeded: number;
+  totalBoxesNeeded: number;
   totalPalletsNeeded: number;
-  cartonsPerPalletBalanced: number;
+  boxesPerPalletBalanced: number;
   isLastPalletDifferent: boolean;
-  lastPalletCartons: number;
+  lastPalletBoxes: number;
   balancedPalletWeight: number;
   lastPalletWeight: number;
-  partsInLastCarton: number;
-  isLastCartonDifferent: boolean;
+  partsInLastBox: number;
+  isLastBoxDifferent: boolean;
+  loadDimensions: Dimensions;
 }
 
 export interface Simulation {
   id: string;
   part: Part;
-  carton: Container;
+  box: Container;
   quantity: number;
   result: PackingResult;
 }
 
-export interface PackedCarton extends Dimensions {
-  id: string; // carton id
+export interface PackedBox extends Dimensions {
+  id: string; // box id
   simulationId: string;
   partName: string;
   x: number;
@@ -72,7 +75,7 @@ export interface PackedCarton extends Dimensions {
 }
 
 export interface PalletLoad {
-  cartons: PackedCarton[];
+  boxes: PackedBox[];
   weight: number;
   volumeUtilization: number;
   loadDimensions: Dimensions;
@@ -81,7 +84,7 @@ export interface PalletLoad {
 export interface SessionResult {
   pallets: PalletLoad[];
   simulations: Simulation[];
-  totalCartons: number;
+  totalBoxes: number;
   totalWeight: number;
   overallUtilization: number;
 }
