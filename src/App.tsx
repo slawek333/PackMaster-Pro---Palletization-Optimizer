@@ -80,6 +80,8 @@ interface MeshBoxProps {
 }
 
 const MeshBox = ({ position, args, color, edgeColor, opacity = 1, label, onClick, isSelected }: MeshBoxProps) => {
+  const fontSize = Math.min(args[1] * 0.5, 0.4); // Scale font size based on height, max 0.4
+  
   return (
     <group position={position}>
       <mesh 
@@ -101,16 +103,63 @@ const MeshBox = ({ position, args, color, edgeColor, opacity = 1, label, onClick
         <Edges color={isSelected ? "#f59e0b" : edgeColor} threshold={15} />
       </mesh>
       {label && (
-        <Text
-          position={[0, args[1] / 2 + 0.01, 0]}
-          rotation={[-Math.PI / 2, 0, 0]}
-          fontSize={0.05}
-          color="black"
-          anchorX="center"
-          anchorY="middle"
-        >
-          {label}
-        </Text>
+        <group>
+          {/* Top */}
+          <Text
+            position={[0, args[1] / 2 + 0.001, 0]}
+            rotation={[-Math.PI / 2, 0, 0]}
+            fontSize={fontSize}
+            color="black"
+            anchorX="center"
+            anchorY="middle"
+          >
+            {label}
+          </Text>
+          {/* Front (+Z) */}
+          <Text
+            position={[0, 0, args[2] / 2 + 0.001]}
+            rotation={[0, 0, 0]}
+            fontSize={fontSize}
+            color="black"
+            anchorX="center"
+            anchorY="middle"
+          >
+            {label}
+          </Text>
+          {/* Back (-Z) */}
+          <Text
+            position={[0, 0, -args[2] / 2 - 0.001]}
+            rotation={[0, Math.PI, 0]}
+            fontSize={fontSize}
+            color="black"
+            anchorX="center"
+            anchorY="middle"
+          >
+            {label}
+          </Text>
+          {/* Right (+X) */}
+          <Text
+            position={[args[0] / 2 + 0.001, 0, 0]}
+            rotation={[0, Math.PI / 2, 0]}
+            fontSize={fontSize}
+            color="black"
+            anchorX="center"
+            anchorY="middle"
+          >
+            {label}
+          </Text>
+          {/* Left (-X) */}
+          <Text
+            position={[-args[0] / 2 - 0.001, 0, 0]}
+            rotation={[0, -Math.PI / 2, 0]}
+            fontSize={fontSize}
+            color="black"
+            anchorX="center"
+            anchorY="middle"
+          >
+            {label}
+          </Text>
+        </group>
       )}
     </group>
   );
@@ -146,7 +195,7 @@ const PalletMesh = ({ pallet }: { pallet: Pallet }) => {
 };
 
 const CameraController = ({ targetView, viewMode, result, selectedId }: { targetView: string, viewMode: string, result: any, selectedId: string | number | null }) => {
-  const { camera, controls } = useThree();
+  const { camera, controls, scene } = useThree();
   const bounds = useBounds();
   
   useEffect(() => {
@@ -155,48 +204,45 @@ const CameraController = ({ targetView, viewMode, result, selectedId }: { target
     // Always refresh bounds when view, viewMode or result changes
     bounds.refresh().clip();
 
-    const positions: Record<string, [number, number, number]> = {
-      perspective: [10, 10, 10],
-      top: [0, 15, 0],
-      front: [0, 0, 15],
-      side: [15, 0, 0],
-    };
-
-    const targetPos = positions[targetView] || positions.perspective;
-    
-    // Use bounds.fit() for perspective to get a tight framing
     if (targetView === 'perspective') {
-      if (selectedId !== null) {
-        // If an item is selected, we could zoom to it, but for now let's just fit the whole thing
-        // to keep context. Or we could fit the selection.
-        // bounds.to({ position: [0,0,0], size: [1,1,1] }).fit();
-        bounds.fit();
-      } else {
-        bounds.fit();
-      }
+      bounds.fit();
     } else {
-      // For orthogonal-like views, we animate position but keep it tight
+      const box = new THREE.Box3().setFromObject(scene);
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      const size = new THREE.Vector3();
+      box.getSize(size);
+
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
+      const cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.2; // 1.2 margin
+
+      const targetPos = new THREE.Vector3();
+      if (targetView === 'top') targetPos.set(center.x, center.y + cameraZ, center.z);
+      if (targetView === 'front') targetPos.set(center.x, center.y, center.z + cameraZ);
+      if (targetView === 'side') targetPos.set(center.x + cameraZ, center.y, center.z);
+
       gsap.to(camera.position, {
-        x: targetPos[0],
-        y: targetPos[1],
-        z: targetPos[2],
+        x: targetPos.x,
+        y: targetPos.y,
+        z: targetPos.z,
         duration: 0.6,
         ease: 'power3.out',
         onUpdate: () => {
-          camera.lookAt(0, 0, 0);
+          camera.lookAt(center);
         }
       });
-    }
 
-    // @ts-ignore
-    gsap.to(controls.target, {
-      x: 0,
-      y: 0,
-      z: 0,
-      duration: 0.6,
-      ease: 'power3.out',
-    });
-  }, [targetView, viewMode, result, bounds, controls, camera, selectedId]);
+      // @ts-ignore
+      gsap.to(controls.target, {
+        x: center.x,
+        y: center.y,
+        z: center.z,
+        duration: 0.6,
+        ease: 'power3.out',
+      });
+    }
+  }, [targetView, viewMode, result, bounds, controls, camera, scene, selectedId]);
 
   return null;
 };
@@ -262,7 +308,7 @@ const PackingCanvas = ({
         gl={{ preserveDrawingBuffer: true }}
       >
         {onCapture && <CanvasCapture onCapture={onCapture} />}
-        <OrbitControls makeDefault minPolarAngle={0} maxPolarAngle={Math.PI / 1.75} enableDamping dampingFactor={0.05} />
+        <OrbitControls makeDefault minPolarAngle={0} maxPolarAngle={Math.PI / 2} enableDamping dampingFactor={0.05} />
         
         <ambientLight intensity={0.9} />
         <pointLight position={[10, 10, 10]} intensity={1.5} castShadow />
