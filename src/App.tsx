@@ -21,7 +21,8 @@ import {
   LayoutGrid,
   Plus,
   Trash2,
-  Check
+  Check,
+  Sparkles
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
@@ -29,10 +30,13 @@ import { OrbitControls, PerspectiveCamera, Edges, Center, Environment, ContactSh
 import * as THREE from 'three';
 import gsap from 'gsap';
 import { Part, Container, Pallet, PackingResult, Simulation, SessionResult, PackedBox, PalletLoad } from './types';
+import { SimulationItem } from './components/SimulationItem';
+import { GeneralSummary } from './components/GeneralSummary';
 import { optimizePacking, packSessionSimulations, suggestBestBox } from './utils/packing';
 import { exportToExcel } from './utils/export';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { GoogleGenAI } from '@google/genai';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -40,8 +44,10 @@ function cn(...inputs: ClassValue[]) {
 
 const STANDARD_PALLETS: Pallet[] = [
   { id: 'euro', name: 'Euro Pallet (EPAL)', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 25 },
+  { id: 'half', name: 'Half Pallet', length: 800, width: 600, height: 150, maxWeight: 500, maxHeight: 2000, emptyWeight: 10 },
   { id: 'ind', name: 'Industrial Pallet', length: 1200, width: 1000, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 30 },
   { id: 'us', name: 'US Standard', length: 1219, width: 1016, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 35 },
+  { id: 'custom', name: 'Custom Pallet', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 25 },
 ];
 
 const INITIAL_PARTS: Part[] = [
@@ -171,78 +177,85 @@ const PalletMesh = ({ pallet }: { pallet: Pallet }) => {
   const d = pallet.width * scale;
   const h = pallet.height * scale;
 
+  const woodColor = "#e1c699"; // Realistic light wood color
+  const edgeColor = "#b08d55";
+
+  // EPAL proportions (144mm total height)
+  const tTop = h * (22 / 144);
+  const tStringer = h * (22 / 144);
+  const tBlock = h * (78 / 144);
+  const tBottom = h * (22 / 144);
+
+  // Widths (800mm total depth)
+  const boardWide = d * (145 / 800);
+  const boardNarrow = d * (100 / 800);
+  const gap = d * (41.25 / 800);
+
+  // Stringer widths (1200mm total length)
+  const stringerW = w * (145 / 1200);
+
+  const yTop = -tTop / 2;
+  const yStringer = -tTop - tStringer / 2;
+  const yBlock = -tTop - tStringer - tBlock / 2;
+  const yBottom = -tTop - tStringer - tBlock - tBottom / 2;
+
+  const xLeft = -w / 2 + stringerW / 2;
+  const xCenter = 0;
+  const xRight = w / 2 - stringerW / 2;
+  const xPositions = [xLeft, xCenter, xRight];
+
+  const zFront = -d / 2 + boardWide / 2;
+  const zMiddle = 0;
+  const zBack = d / 2 - boardWide / 2;
+  const zPositions = [zFront, zMiddle, zBack];
+
+  const zTopPositions = [
+    -d / 2 + boardWide / 2,
+    -d / 2 + boardWide + gap + boardNarrow / 2,
+    0,
+    d / 2 - boardWide - gap - boardNarrow / 2,
+    d / 2 - boardWide / 2
+  ];
+  const zTopWidths = [boardWide, boardNarrow, boardWide, boardNarrow, boardWide];
+
   return (
-    <group position={[0, -h/2, 0]}>
-      {/* Main base */}
-      <MeshBox 
-        position={[0, 0, 0]} 
-        args={[w, h, d]} 
-        color="#78350f" 
-        edgeColor="#451a03" 
-      />
-      {/* Slats (visual only) */}
-      {Array.from({ length: 5 }).map((_, i) => (
-        <MeshBox 
-          key={i}
-          position={[0, h/2 + 0.01, (i - 2) * (d/5)]}
-          args={[w, 0.01, d/10]}
-          color="#92400e"
-          edgeColor="#451a03"
-        />
+    <group position={[0, 0, 0]}>
+      {/* Bottom boards (3) - running along length (X) */}
+      {zPositions.map((z, i) => (
+        <MeshBox key={`bottom-${i}`} position={[0, yBottom, z]} args={[w, tBottom, boardWide]} color={woodColor} edgeColor={edgeColor} />
+      ))}
+
+      {/* Blocks (9) */}
+      {xPositions.map((x, i) => (
+        zPositions.map((z, j) => (
+          <MeshBox key={`block-${i}-${j}`} position={[x, yBlock, z]} args={[stringerW, tBlock, boardWide]} color={woodColor} edgeColor={edgeColor} />
+        ))
+      ))}
+
+      {/* Stringer boards (3) - running along width (Z) */}
+      {xPositions.map((x, i) => (
+        <MeshBox key={`stringer-${i}`} position={[x, yStringer, 0]} args={[stringerW, tStringer, d]} color={woodColor} edgeColor={edgeColor} />
+      ))}
+
+      {/* Top boards (5) - running along length (X) */}
+      {zTopPositions.map((z, i) => (
+        <MeshBox key={`top-${i}`} position={[0, yTop, z]} args={[w, tTop, zTopWidths[i]]} color={woodColor} edgeColor={edgeColor} />
       ))}
     </group>
   );
 };
 
-const CameraController = ({ targetView, viewMode, result, selectedId }: { targetView: string, viewMode: string, result: any, selectedId: string | number | null }) => {
-  const { camera, controls, scene } = useThree();
+const CameraController = ({ viewMode, result, selectedId }: { viewMode: string, result: any, selectedId: string | number | null }) => {
+  const { controls } = useThree();
   const bounds = useBounds();
   
   useEffect(() => {
     if (!controls) return;
     
-    // Always refresh bounds when view, viewMode or result changes
+    // Always refresh bounds when viewMode or result changes
     bounds.refresh().clip();
-
-    if (targetView === 'perspective') {
-      bounds.fit();
-    } else {
-      const box = new THREE.Box3().setFromObject(scene);
-      const center = new THREE.Vector3();
-      box.getCenter(center);
-      const size = new THREE.Vector3();
-      box.getSize(size);
-
-      const maxDim = Math.max(size.x, size.y, size.z);
-      const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
-      const cameraZ = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.2; // 1.2 margin
-
-      const targetPos = new THREE.Vector3();
-      if (targetView === 'top') targetPos.set(center.x, center.y + cameraZ, center.z);
-      if (targetView === 'front') targetPos.set(center.x, center.y, center.z + cameraZ);
-      if (targetView === 'side') targetPos.set(center.x + cameraZ, center.y, center.z);
-
-      gsap.to(camera.position, {
-        x: targetPos.x,
-        y: targetPos.y,
-        z: targetPos.z,
-        duration: 0.6,
-        ease: 'power3.out',
-        onUpdate: () => {
-          camera.lookAt(center);
-        }
-      });
-
-      // @ts-ignore
-      gsap.to(controls.target, {
-        x: center.x,
-        y: center.y,
-        z: center.z,
-        duration: 0.6,
-        ease: 'power3.out',
-      });
-    }
-  }, [targetView, viewMode, result, bounds, controls, camera, scene, selectedId]);
+    bounds.fit();
+  }, [viewMode, result, bounds, controls, selectedId]);
 
   return null;
 };
@@ -262,7 +275,6 @@ const CanvasCapture = ({ onCapture }: { onCapture: (dataUrl: string) => void }) 
 
 const PackingCanvas = ({ 
   viewMode, 
-  targetView,
   part, 
   box, 
   pallet, 
@@ -273,7 +285,6 @@ const PackingCanvas = ({
   onCapture
 }: { 
   viewMode: 'pallet' | 'box', 
-  targetView: string,
   part: Part, 
   box: Container, 
   pallet: Pallet, 
@@ -315,7 +326,7 @@ const PackingCanvas = ({
         <spotLight position={[-10, 10, -10]} intensity={0.5} />
         
         <Bounds fit clip observe margin={1.05}>
-          <CameraController targetView={targetView} viewMode={viewMode} result={currentResult} selectedId={selectedId} />
+          <CameraController viewMode={viewMode} result={currentResult} selectedId={selectedId} />
           <Center top>
             {viewMode === 'pallet' ? (
               <group onClick={() => setSelectedId(null)}>
@@ -431,9 +442,11 @@ const PackingCanvas = ({
                   const nx = currentResult.boxGrid.nx;
                   const ny = currentResult.boxGrid.ny;
 
+                  const partsToRender = Math.min(currentResult.partsPerBox, currentPart.orderQuantity);
+
                   return (
                     <group position={[-(nx * pw) / 2, 0, -(ny * pd) / 2]}>
-                      {Array.from({ length: currentResult.partsPerBox }).map((_, i) => {
+                      {Array.from({ length: partsToRender }).map((_, i) => {
                         const ix = i % nx;
                         const iy = Math.floor(i / nx) % ny;
                         const iz = Math.floor(i / (nx * ny));
@@ -525,13 +538,6 @@ const PackingCanvas = ({
           </motion.div>
         )}
       </AnimatePresence>
-
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 pointer-events-none">
-        <div className="bg-black/60 backdrop-blur-md text-white px-3 py-1 rounded-full text-[10px] font-medium flex items-center gap-2">
-          <RefreshCw size={10} className="animate-spin-slow" />
-          Drag to rotate • Scroll to zoom • Click to select
-        </div>
-      </div>
     </div>
   );
 };
@@ -543,7 +549,6 @@ export default function App() {
   const [selectedBoxId, setSelectedBoxId] = useState<string>(INITIAL_BOXS[0].id);
   const [pallet, setPallet] = useState<Pallet>(STANDARD_PALLETS[0]);
   const [viewMode, setViewMode] = useState<'pallet' | 'box'>('pallet');
-  const [targetView, setTargetView] = useState<string>('perspective');
   const [selectedPalletIndex, setSelectedPalletIndex] = useState<number | null>(null);
   const [selectedSimulationId, setSelectedSimulationId] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
@@ -610,6 +615,61 @@ export default function App() {
   const [exportStep, setExportStep] = useState<'idle' | 'pallet' | 'box' | 'final'>('idle');
   const [palletImage, setPalletImage] = useState<string | undefined>();
   const [boxImage, setBoxImage] = useState<string | undefined>();
+  const [aiInsights, setAiInsights] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+
+  const generateAIInsights = async () => {
+    if (!result && !sessionResult) return;
+    
+    setIsAnalyzing(true);
+    setAiInsights(null);
+    
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      
+      let promptData = '';
+      if (sessionResult) {
+        promptData = `
+          Total Pallets Needed: ${sessionResult.pallets.length}
+          Total Weight: ${sessionResult.totalWeight.toFixed(1)} kg
+          Overall Volume Utilization: ${(sessionResult.overallUtilization * 100).toFixed(1)}%
+          Total Boxes Packed: ${sessionResult.totalBoxes}
+        `;
+      } else if (result) {
+        const totalShipmentWeight = ((result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded) * result.balancedPalletWeight + (result.isLastPalletDifferent ? result.lastPalletWeight : 0)).toFixed(1);
+        promptData = `
+          Part: ${part.name} (${part.length}x${part.width}x${part.height}mm, ${part.weight}kg)
+          Box: ${box.name} (${box.length}x${box.width}x${box.height}mm)
+          Parts per Box: ${result.partsPerBox}
+          Box Volume Utilization: ${(result.boxVolumeUtilization * 100).toFixed(1)}%
+          Total Pallets Needed: ${result.totalPalletsNeeded}
+          Boxes per Full Pallet: ${result.boxesPerPallet}
+          Total Shipment Weight: ${totalShipmentWeight} kg
+          Pallet Volume Utilization: ${(result.palletVolumeUtilization * 100).toFixed(1)}%
+        `;
+      }
+
+      const prompt = `You are an expert logistics and supply chain AI assistant for DIAM Palletizer.
+      Please analyze the following palletization and packing data and provide a short, professional summary (max 3-4 sentences).
+      Highlight any efficiencies, potential cost savings, or optimization tips.
+      
+      Data:
+      ${promptData}
+      `;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: prompt,
+      });
+
+      setAiInsights(response.text || "No insights generated.");
+    } catch (error) {
+      console.error("AI Analysis failed:", error);
+      setAiInsights("Failed to generate AI insights. Please try again later.");
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   useEffect(() => {
     if (exportStep === 'final' && palletImage && boxImage) {
@@ -619,6 +679,30 @@ export default function App() {
       setBoxImage(undefined);
     }
   }, [exportStep, palletImage, boxImage, part, box, pallet, result, simulations, sessionResult]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement && e.target.type === 'number') {
+        if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+          e.preventDefault();
+        }
+      }
+    };
+    
+    const handleWheel = (e: WheelEvent) => {
+      if (e.target instanceof HTMLInputElement && e.target.type === 'number') {
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('wheel', handleWheel, { passive: false });
+    
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('wheel', handleWheel);
+    };
+  }, []);
 
   const handleReset = () => {
     setParts(INITIAL_PARTS);
@@ -682,11 +766,10 @@ export default function App() {
       <header className="h-16 bg-black text-white flex items-center px-6 sticky top-0 z-50">
         <div className="flex items-center gap-3">
           <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M5 20 L95 50 L20 90 Z" fill="white" />
-            <path d="M5 20 Q 25 45 40 50" stroke="black" strokeWidth="3" fill="none" />
-            <path d="M20 90 Q 35 70 40 50" stroke="black" strokeWidth="3" fill="none" />
-            <path d="M95 50 Q 70 45 40 50" stroke="black" strokeWidth="3" fill="none" />
-            <path d="M5 20 Q 25 55 20 90" stroke="black" strokeWidth="3" fill="none" />
+            <path d="M 12 12 Q 55 10 95 42 Q 75 80 28 92 Q 10 55 12 12 Z" fill="white" />
+            <path d="M 48 46 Q 35 25 12 12" stroke="black" strokeWidth="5" fill="none" strokeLinecap="round" />
+            <path d="M 48 46 Q 70 35 95 42" stroke="black" strokeWidth="5" fill="none" strokeLinecap="round" />
+            <path d="M 48 46 Q 35 70 28 92" stroke="black" strokeWidth="5" fill="none" strokeLinecap="round" />
           </svg>
           <h1 className="font-light text-2xl tracking-[0.2em] mt-1">DIAM</h1>
         </div>
@@ -1042,6 +1125,48 @@ export default function App() {
                   />
                 </div>
               </div>
+              {pallet.id === 'custom' && (
+                <>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="label-text">Length (mm)</label>
+                      <input 
+                        type="number" 
+                        value={pallet.length} 
+                        onChange={e => setPallet({...pallet, length: Number(e.target.value)})}
+                        className="input-field"
+                      />
+                    </div>
+                    <div>
+                      <label className="label-text">Width (mm)</label>
+                      <input 
+                        type="number" 
+                        value={pallet.width} 
+                        onChange={e => setPallet({...pallet, width: Number(e.target.value)})}
+                        className="input-field"
+                      />
+                    </div>
+                    <div>
+                      <label className="label-text">Height (mm)</label>
+                      <input 
+                        type="number" 
+                        value={pallet.height} 
+                        onChange={e => setPallet({...pallet, height: Number(e.target.value)})}
+                        className="input-field"
+                      />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="label-text">Empty Pallet Weight (kg)</label>
+                    <input 
+                      type="number" 
+                      value={pallet.emptyWeight} 
+                      onChange={e => setPallet({...pallet, emptyWeight: Number(e.target.value)})}
+                      className="input-field"
+                    />
+                  </div>
+                </>
+              )}
             </div>
           </section>
 
@@ -1090,23 +1215,7 @@ export default function App() {
               </div>
               <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                 {simulations.map((sim, idx) => (
-                  <div key={sim.id} className="p-3 bg-white border border-zinc-100 rounded-xl flex items-center justify-between group">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-lg bg-zinc-50 flex items-center justify-center text-zinc-400 font-bold text-xs">
-                        {idx + 1}
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-zinc-900">{sim.part.name}</div>
-                        <div className="text-[10px] text-zinc-500">{sim.result.totalBoxesNeeded} boxes • {sim.quantity} parts</div>
-                      </div>
-                    </div>
-                    <button 
-                      onClick={() => removeSimulation(sim.id)}
-                      className="p-1.5 text-zinc-300 hover:text-red-500 transition-colors"
-                    >
-                      <Trash2 size={14} />
-                    </button>
-                  </div>
+                  <SimulationItem key={sim.id} sim={sim} idx={idx} onRemove={removeSimulation} />
                 ))}
               </div>
               {sessionResult && (
@@ -1127,60 +1236,13 @@ export default function App() {
 
         {/* Right Column: Results & Visualization */}
         <div className="lg:col-span-8 space-y-6">
-          {/* Top Stats */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="glass-panel p-5 border-l-4 border-l-blue-500"
-            >
-              <div className="text-xs font-bold text-zinc-400 uppercase mb-1">
-                {sessionResult ? 'Total Boxes' : 'Parts per Box'}
-              </div>
-              <div className="text-3xl font-bold text-zinc-900">
-                {sessionResult ? sessionResult.totalBoxes : result.partsPerBox}
-              </div>
-              <div className="text-xs text-zinc-500 mt-1">
-                {sessionResult ? 'Across all simulations' : `Utilization: ${(result.boxVolumeUtilization * 100).toFixed(1)}%`}
-              </div>
-            </motion.div>
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 }}
-              className="glass-panel p-5 border-l-4 border-l-orange-500"
-            >
-              <div className="text-xs font-bold text-zinc-400 uppercase mb-1">
-                {sessionResult ? 'Total Pallets' : 'Boxes per Pallet'}
-              </div>
-              <div className="text-3xl font-bold text-zinc-900">
-                {sessionResult ? sessionResult.pallets.length : Math.min(result.totalBoxesNeeded, result.boxesPerPallet)}
-                {!sessionResult && <span className="text-sm text-zinc-400 font-normal ml-2">/ {result.boxesPerPallet} max</span>}
-              </div>
-              <div className="text-xs text-zinc-500 mt-1">
-                Utilization: <span className="font-semibold text-emerald-600">
-                  {((sessionResult ? sessionResult.overallUtilization : result.palletVolumeUtilization) * 100).toFixed(1)}%
-                </span>
-              </div>
-            </motion.div>
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 }}
-              className="glass-panel p-5 border-l-4 border-l-emerald-500"
-            >
-              <div className="text-xs font-bold text-zinc-400 uppercase mb-1">
-                {sessionResult ? 'Total Weight' : 'Total Parts / Pallet'}
-              </div>
-              <div className="text-3xl font-bold text-zinc-900">
-                {sessionResult ? sessionResult.totalWeight.toFixed(0) : result.totalPartsPerPallet}
-                {sessionResult && <span className="text-sm text-zinc-400 font-normal ml-1">kg</span>}
-              </div>
-              <div className="text-xs text-zinc-500 mt-1">
-                {sessionResult ? 'Gross shipment weight' : `Total Weight: ${result.palletWeight.toFixed(1)} kg`}
-              </div>
-            </motion.div>
-          </div>
+          <GeneralSummary 
+            result={result} 
+            sessionResult={sessionResult} 
+            simulations={simulations} 
+            currentBox={box}
+            currentPallet={pallet}
+          />
 
           {/* Visualization Area */}
           <div className="glass-panel overflow-hidden flex flex-col min-h-[700px]">
@@ -1272,7 +1334,6 @@ export default function App() {
 
               <PackingCanvas 
                 viewMode={viewMode}
-                targetView={targetView}
                 part={part}
                 box={box}
                 pallet={pallet}
@@ -1297,7 +1358,6 @@ export default function App() {
                       <div className="w-[800px] h-[600px]">
                         <PackingCanvas 
                           viewMode="pallet"
-                          targetView="perspective"
                           part={part}
                           box={box}
                           pallet={pallet}
@@ -1315,7 +1375,6 @@ export default function App() {
                       <div className="w-[800px] h-[600px]">
                         <PackingCanvas 
                           viewMode="box"
-                          targetView="perspective"
                           part={part}
                           box={box}
                           pallet={pallet}
@@ -1332,35 +1391,6 @@ export default function App() {
                   </div>
                 </div>
               )}
-
-              {/* View Controls */}
-              <div className="absolute top-4 right-4 flex flex-col gap-2">
-                {[
-                  { id: 'perspective', label: '3D View', icon: Box },
-                  { id: 'top', label: 'Top View', icon: ArrowDown },
-                  { id: 'front', label: 'Front View', icon: ArrowRight },
-                  { id: 'side', label: 'Side View', icon: ArrowUpRight },
-                ].map((view) => (
-                  <button
-                    key={view.id}
-                    onClick={() => setTargetView(view.id)}
-                    className={cn(
-                      "p-2 rounded-xl border transition-all duration-300 flex items-center gap-2 group",
-                      targetView === view.id 
-                        ? "bg-emerald-600 border-emerald-700 text-white shadow-lg" 
-                        : "bg-white/80 backdrop-blur-md border-zinc-200 text-zinc-600 hover:bg-white"
-                    )}
-                  >
-                    <view.icon className="w-4 h-4" />
-                    <span className={cn(
-                      "text-[10px] font-bold uppercase tracking-wider overflow-hidden transition-all duration-300",
-                      targetView === view.id ? "w-20 opacity-100" : "w-0 opacity-0 group-hover:w-20 group-hover:opacity-100"
-                    )}>
-                      {view.label}
-                    </span>
-                  </button>
-                ))}
-              </div>
 
               {/* Legend / Info Overlay */}
               <div className="absolute bottom-4 left-4 right-4 bg-white/80 backdrop-blur-md p-4 rounded-2xl border border-white/50 flex justify-between items-center shadow-lg pointer-events-none">
@@ -1399,11 +1429,6 @@ export default function App() {
                     }
                   </div>
                 </div>
-              </div>
-
-              {/* Interaction Hint */}
-              <div className="absolute top-4 left-1/2 -translate-x-1/2 px-3 py-1 bg-black/10 backdrop-blur-sm rounded-full text-[10px] text-zinc-500 font-medium pointer-events-none">
-                Drag to rotate • Scroll to zoom
               </div>
             </div>
           </div>
@@ -1560,7 +1585,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="p-6 text-center text-zinc-400 text-xs border-t border-zinc-100 bg-white">
-        <p>© 2026 PackMaster Pro - Advanced Logistics Optimization Engine</p>
+        <p>© 2026 DIAM Palletizer - Advanced Logistics Optimization Engine</p>
         <p className="mt-1 italic">All calculations are based on rectangular bounding boxes and standard metric units.</p>
       </footer>
     </div>

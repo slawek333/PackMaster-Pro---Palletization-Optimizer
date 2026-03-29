@@ -361,8 +361,8 @@ export function optimizePacking(part: Part, box: Container, pallet: Pallet, tota
   let boxesPerPallet = palletFit.count;
   let palletGrid = { nx: palletFit.nx, ny: palletFit.ny, nz: palletFit.nz };
   const boxTotalWeight = (partsPerBox * part.weight) + box.emptyWeight;
-  if (boxesPerPallet * boxTotalWeight > pallet.maxWeight) {
-    boxesPerPallet = Math.floor(pallet.maxWeight / boxTotalWeight);
+  if ((boxesPerPallet * boxTotalWeight) + pallet.emptyWeight > pallet.maxWeight) {
+    boxesPerPallet = Math.floor((pallet.maxWeight - pallet.emptyWeight) / boxTotalWeight);
   }
 
   const totalPartsPerPallet = partsPerBox * boxesPerPallet;
