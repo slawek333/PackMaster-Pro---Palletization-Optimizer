@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { 
   Package, 
   Box, 
@@ -22,7 +22,10 @@ import {
   Plus,
   Trash2,
   Check,
-  Sparkles
+  Sparkles,
+  Cpu,
+  Archive,
+  Palette
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
@@ -32,11 +35,12 @@ import gsap from 'gsap';
 import { Part, Container, Pallet, PackingResult, Simulation, SessionResult, PackedBox, PalletLoad } from './types';
 import { SimulationItem } from './components/SimulationItem';
 import { GeneralSummary } from './components/GeneralSummary';
-import { optimizePacking, packSessionSimulations, suggestBestBox } from './utils/packing';
+import { optimizePacking, packSessionSimulations } from './utils/packing';
 import { exportToExcel } from './utils/export';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { GoogleGenAI } from '@google/genai';
+import { getOptimalBoxSuggestion, type AISuggestion } from './services/geminiService';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -46,7 +50,6 @@ const STANDARD_PALLETS: Pallet[] = [
   { id: 'euro', name: 'Euro Pallet (EPAL)', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 25 },
   { id: 'half', name: 'Half Pallet', length: 800, width: 600, height: 150, maxWeight: 500, maxHeight: 2000, emptyWeight: 10 },
   { id: 'ind', name: 'Industrial Pallet', length: 1200, width: 1000, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 30 },
-  { id: 'us', name: 'US Standard', length: 1219, width: 1016, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 35 },
   { id: 'custom', name: 'Custom Pallet', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 25 },
 ];
 
@@ -83,11 +86,15 @@ interface MeshBoxProps {
   label?: string;
   onClick?: () => void;
   isSelected?: boolean;
+  isStable?: boolean;
 }
 
-const MeshBox = ({ position, args, color, edgeColor, opacity = 1, label, onClick, isSelected }: MeshBoxProps) => {
+const MeshBox = ({ position, args, color, edgeColor, opacity = 1, label, onClick, isSelected, isStable = true }: MeshBoxProps) => {
   const fontSize = Math.min(args[1] * 0.5, 0.4); // Scale font size based on height, max 0.4
   
+  const finalColor = !isStable ? "#ef4444" : (isSelected ? "#fbbf24" : color);
+  const finalEdgeColor = !isStable ? "#b91c1c" : (isSelected ? "#f59e0b" : edgeColor);
+
   return (
     <group position={position}>
       <mesh 
@@ -100,13 +107,13 @@ const MeshBox = ({ position, args, color, edgeColor, opacity = 1, label, onClick
       >
         <boxGeometry args={args} />
         <meshStandardMaterial 
-          color={isSelected ? "#fbbf24" : color} 
-          transparent={opacity < 1 || isSelected} 
-          opacity={isSelected ? 0.9 : opacity} 
+          color={finalColor} 
+          transparent={opacity < 1 || isSelected || !isStable} 
+          opacity={!isStable ? 0.8 : (isSelected ? 0.9 : opacity)} 
           metalness={isSelected ? 0.5 : 0.1}
           roughness={isSelected ? 0.2 : 0.8}
         />
-        <Edges color={isSelected ? "#f59e0b" : edgeColor} threshold={15} />
+        <Edges color={finalEdgeColor} threshold={15} />
       </mesh>
       {label && (
         <group>
@@ -245,6 +252,67 @@ const PalletMesh = ({ pallet }: { pallet: Pallet }) => {
   );
 };
 
+const NumberInput = ({ value, onChange, className, min, max, step }: any) => {
+  const [localValue, setLocalValue] = useState(value === 0 ? '' : value.toString());
+  const prevValueRef = useRef(value);
+
+  useEffect(() => {
+    if (value !== prevValueRef.current) {
+      const numLocal = Number(localValue);
+      if (value !== numLocal && !(Number.isNaN(value) && Number.isNaN(numLocal))) {
+        setLocalValue(value === 0 ? '' : value.toString());
+      }
+      prevValueRef.current = value;
+    }
+  }, [value, localValue]);
+
+  const numVal = Number(localValue);
+  const isInvalid = 
+    localValue === '' || 
+    isNaN(numVal) || 
+    (min !== undefined && numVal < min) || 
+    (max !== undefined && numVal > max);
+
+  let errorMsg = "";
+  if (isInvalid) {
+    if (localValue === '' || isNaN(numVal)) errorMsg = "Required";
+    else if (min !== undefined && numVal < min) errorMsg = `Min: ${min}`;
+    else if (max !== undefined && numVal > max) errorMsg = `Max: ${max}`;
+  }
+
+  return (
+    <>
+      <input
+        type="number"
+        value={localValue}
+        onChange={e => {
+          setLocalValue(e.target.value);
+          const val = e.target.value;
+          const num = Number(val);
+          const invalid = 
+            val === '' || 
+            isNaN(num) || 
+            (min !== undefined && num < min) || 
+            (max !== undefined && num > max);
+          
+          if (!invalid) {
+            onChange({ target: { value: val } });
+          }
+        }}
+        className={cn(className, isInvalid && "border-red-500 focus:border-red-500 focus:ring-red-500 bg-red-50")}
+        min={min}
+        max={max}
+        step={step}
+      />
+      {isInvalid && (
+        <span className="block text-[10px] text-red-500 mt-1 font-medium leading-none">
+          {errorMsg}
+        </span>
+      )}
+    </>
+  );
+};
+
 const CameraController = ({ viewMode, result, selectedId }: { viewMode: string, result: any, selectedId: string | number | null }) => {
   const { controls } = useThree();
   const bounds = useBounds();
@@ -273,7 +341,7 @@ const CanvasCapture = ({ onCapture }: { onCapture: (dataUrl: string) => void }) 
   return null;
 };
 
-const PackingCanvas = ({ 
+const PackingCanvas = React.memo(({ 
   viewMode, 
   part, 
   box, 
@@ -355,12 +423,13 @@ const PackingCanvas = ({
                               <MeshBox 
                                 key={i}
                                 position={[c.x * scale + c.length * scale / 2, c.z * scale + c.height * scale / 2, c.y * scale + c.width * scale / 2]}
-                                args={[c.length * scale - 0.01, c.height * scale - 0.01, c.width * scale - 0.01]}
+                                args={[c.length * scale - 0.0005, c.height * scale - 0.0005, c.width * scale - 0.0005]}
                                 color={c.color}
                                 edgeColor={c.edgeColor}
                                 label={c.partName.substring(0, 8)}
                                 onClick={() => setSelectedId(`p${palletIdx}-c${i}`)}
                                 isSelected={selectedId === `p${palletIdx}-c${i}`}
+                                isStable={c.isStable}
                               />
                             ))}
                           </group>
@@ -408,12 +477,13 @@ const PackingCanvas = ({
                                 <MeshBox 
                                   key={i}
                                   position={[ix * cw + cw/2, iz * ch + ch/2, iy * cd + cd/2]}
-                                  args={[cw - 0.01, ch - 0.01, cd - 0.01]}
+                                  args={[cw - 0.0005, ch - 0.0005, cd - 0.0005]}
                                   color="#fef3c7"
                                   edgeColor="#d97706"
                                   label={part.name.substring(0, 8)}
                                   onClick={() => setSelectedId(globalId)}
                                   isSelected={selectedId === globalId}
+                                  isStable={result.isStable}
                                 />
                               );
                             })}
@@ -540,7 +610,7 @@ const PackingCanvas = ({
       </AnimatePresence>
     </div>
   );
-};
+});
 
 export default function App() {
   const [parts, setParts] = useState<Part[]>(INITIAL_PARTS);
@@ -549,9 +619,12 @@ export default function App() {
   const [selectedBoxId, setSelectedBoxId] = useState<string>(INITIAL_BOXS[0].id);
   const [pallet, setPallet] = useState<Pallet>(STANDARD_PALLETS[0]);
   const [viewMode, setViewMode] = useState<'pallet' | 'box'>('pallet');
+  const [shippingMethod, setShippingMethod] = useState<'pallet' | 'courier'>('pallet');
+  const [calculationMode, setCalculationMode] = useState<'full' | 'boxes-only'>('full');
   const [selectedPalletIndex, setSelectedPalletIndex] = useState<number | null>(null);
   const [selectedSimulationId, setSelectedSimulationId] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
+  const [projectNumber, setProjectNumber] = useState('');
 
   const [simulations, setSimulations] = useState<Simulation[]>([]);
   const [sessionResult, setSessionResult] = useState<SessionResult | null>(null);
@@ -590,6 +663,30 @@ export default function App() {
     }
   };
 
+  const editSimulation = (sim: Simulation) => {
+    // Update the part and box lists if they don't exist, or just update their values
+    setParts(prev => {
+      const exists = prev.find(p => p.id === sim.part.id);
+      if (exists) {
+        return prev.map(p => p.id === sim.part.id ? sim.part : p);
+      }
+      return [...prev, sim.part];
+    });
+    setBoxes(prev => {
+      const exists = prev.find(b => b.id === sim.box.id);
+      if (exists) {
+        return prev.map(b => b.id === sim.box.id ? sim.box : b);
+      }
+      return [...prev, sim.box];
+    });
+    
+    setSelectedPartId(sim.part.id);
+    setSelectedBoxId(sim.box.id);
+    
+    // Remove it from the session so it can be re-added
+    removeSimulation(sim.id);
+  };
+
   const handleExport = async () => {
     setIsOptimizing(true);
     try {
@@ -617,6 +714,33 @@ export default function App() {
   const [boxImage, setBoxImage] = useState<string | undefined>();
   const [aiInsights, setAiInsights] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isSuggestingAI, setIsSuggestingAI] = useState(false);
+  const [aiSuggestionModal, setAiSuggestionModal] = useState<AISuggestion | null>(null);
+
+  const handleAISuggestion = async () => {
+    setIsSuggestingAI(true);
+    try {
+      const suggestion = await getOptimalBoxSuggestion(part, part.orderQuantity, shippingMethod, shippingMethod === 'pallet' ? pallet : undefined);
+      
+      const newBox: Container = {
+        id: Math.random().toString(36).substr(2, 9),
+        name: suggestion.boxName,
+        length: suggestion.length,
+        width: suggestion.width,
+        height: suggestion.height,
+        maxWeight: 30, // Default max weight for courier/general
+        emptyWeight: 0.5 // Default empty weight
+      };
+      
+      setBoxes([...boxes, newBox]);
+      setSelectedBoxId(newBox.id);
+      setAiSuggestionModal(suggestion);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Failed to get AI suggestion');
+    } finally {
+      setIsSuggestingAI(false);
+    }
+  };
 
   const generateAIInsights = async () => {
     if (!result && !sessionResult) return;
@@ -673,12 +797,12 @@ export default function App() {
 
   useEffect(() => {
     if (exportStep === 'final' && palletImage && boxImage) {
-      exportToExcel(part, box, pallet, result, part.orderQuantity, palletImage, boxImage, simulations, sessionResult);
+      exportToExcel(part, box, pallet, result, part.orderQuantity, palletImage, boxImage, simulations, sessionResult, shippingMethod, projectNumber);
       setExportStep('idle');
       setPalletImage(undefined);
       setBoxImage(undefined);
     }
-  }, [exportStep, palletImage, boxImage, part, box, pallet, result, simulations, sessionResult]);
+  }, [exportStep, palletImage, boxImage, part, box, pallet, result, simulations, sessionResult, shippingMethod, projectNumber]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -740,12 +864,6 @@ export default function App() {
     setSelectedBoxId(newBox.id);
   };
 
-  const handleSuggestBestBox = () => {
-    const bestBox = suggestBestBox(part, pallet);
-    setBoxes([...boxes, bestBox]);
-    setSelectedBoxId(bestBox.id);
-  };
-
   const deletePart = (id: string) => {
     if (parts.length <= 1) return;
     const newParts = parts.filter(p => p.id !== id);
@@ -763,7 +881,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <header className="h-16 bg-black text-white flex items-center px-6 sticky top-0 z-50">
+      <header className="h-16 bg-zinc-950 text-white flex items-center px-6 sticky top-0 z-50 border-b border-zinc-800 shadow-sm">
         <div className="flex items-center gap-3">
           <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
             <path d="M 12 12 Q 55 10 95 42 Q 75 80 28 92 Q 10 55 12 12 Z" fill="white" />
@@ -771,8 +889,57 @@ export default function App() {
             <path d="M 48 46 Q 70 35 95 42" stroke="black" strokeWidth="5" fill="none" strokeLinecap="round" />
             <path d="M 48 46 Q 35 70 28 92" stroke="black" strokeWidth="5" fill="none" strokeLinecap="round" />
           </svg>
-          <h1 className="font-light text-2xl tracking-[0.2em] mt-1">DIAM</h1>
+          <h1 className="font-light text-2xl tracking-[0.2em] mt-1 bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent">DIAM</h1>
         </div>
+
+        <div className="ml-12 flex items-center gap-6">
+          <div className="hidden md:flex items-center gap-2">
+            <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Project No.</label>
+            <input
+              type="text"
+              value={projectNumber}
+              onChange={(e) => setProjectNumber(e.target.value)}
+              placeholder="e.g. PRJ-123"
+              className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 w-32 transition-all"
+            />
+          </div>
+
+          <div className="hidden md:flex bg-zinc-900 p-1 rounded-xl border border-zinc-800 shadow-inner">
+            <button 
+              onClick={() => {
+                setShippingMethod('pallet');
+                setCalculationMode('full');
+                setViewMode('pallet');
+              }}
+            className={cn(
+              "px-5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-2 transition-all duration-300",
+              shippingMethod === 'pallet' 
+                ? "bg-emerald-600 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)] scale-105" 
+                : "text-zinc-500 hover:text-zinc-300"
+            )}
+          >
+            <Layers size={14} />
+            Pallet Shipping
+          </button>
+          <button 
+            onClick={() => {
+              setShippingMethod('courier');
+              setCalculationMode('boxes-only');
+              setViewMode('box');
+            }}
+            className={cn(
+              "px-5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-2 transition-all duration-300",
+              shippingMethod === 'courier' 
+                ? "bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)] scale-105" 
+                : "text-zinc-500 hover:text-zinc-300"
+            )}
+          >
+            <Truck size={14} />
+            Courier Shipping
+          </button>
+        </div>
+        </div>
+
         <div className="ml-auto flex items-center gap-4">
           <button 
             onClick={handleReset}
@@ -799,7 +966,7 @@ export default function App() {
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <div className="p-1.5 bg-blue-50 text-blue-600 rounded-md">
-                  <Box size={18} />
+                  <Cpu size={18} />
                 </div>
                 <h2 className="font-semibold text-zinc-900">Part Library</h2>
               </div>
@@ -859,70 +1026,89 @@ export default function App() {
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="label-text">Length (mm)</label>
-                  <input 
-                    type="number" 
+                  <NumberInput 
                     value={part.length} 
                     onChange={e => {
                       const newParts = parts.map(p => p.id === selectedPartId ? {...p, length: Number(e.target.value)} : p);
                       setParts(newParts);
                     }}
                     className="input-field"
+                    min={0.1}
+                    max={10000}
                   />
                 </div>
                 <div>
                   <label className="label-text">Width (mm)</label>
-                  <input 
-                    type="number" 
+                  <NumberInput 
                     value={part.width} 
                     onChange={e => {
                       const newParts = parts.map(p => p.id === selectedPartId ? {...p, width: Number(e.target.value)} : p);
                       setParts(newParts);
                     }}
                     className="input-field"
+                    min={0.1}
+                    max={10000}
                   />
                 </div>
                 <div>
                   <label className="label-text">Height (mm)</label>
-                  <input 
-                    type="number" 
+                  <NumberInput 
                     value={part.height} 
                     onChange={e => {
                       const newParts = parts.map(p => p.id === selectedPartId ? {...p, height: Number(e.target.value)} : p);
                       setParts(newParts);
                     }}
                     className="input-field"
+                    min={0.1}
+                    max={10000}
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="label-text">Unit Weight (kg)</label>
                   <div className="relative">
-                    <input 
-                      type="number" 
+                    <NumberInput 
                       value={part.weight} 
                       onChange={e => {
                         const newParts = parts.map(p => p.id === selectedPartId ? {...p, weight: Number(e.target.value)} : p);
                         setParts(newParts);
                       }}
                       className="input-field pr-10"
+                      min={0.01}
+                      max={10000}
                     />
-                    <div className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400">
+                    <div className="absolute right-3 top-[19px] -translate-y-1/2 text-zinc-400">
                       <Weight size={14} />
                     </div>
                   </div>
                 </div>
                 <div>
                   <label className="label-text">Total Order Qty</label>
-                  <input 
-                    type="number" 
+                  <NumberInput 
                     value={part.orderQuantity} 
                     onChange={e => {
                       const newParts = parts.map(p => p.id === selectedPartId ? {...p, orderQuantity: Number(e.target.value)} : p);
                       setParts(newParts);
                     }}
                     className="input-field"
-                    min="1"
+                    min={1}
+                    max={1000000}
+                  />
+                </div>
+                <div>
+                  <label className="label-text">Max Qty in Box (Optional)</label>
+                  <NumberInput 
+                    value={part.maxPartsPerBox || 0} 
+                    onChange={e => {
+                      const val = Number(e.target.value);
+                      const newParts = parts.map(p => p.id === selectedPartId ? {...p, maxPartsPerBox: val > 0 ? val : undefined} : p);
+                      setParts(newParts);
+                    }}
+                    className="input-field"
+                    min={0}
+                    max={1000000}
+                    placeholder="Auto"
                   />
                 </div>
               </div>
@@ -934,17 +1120,23 @@ export default function App() {
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <div className="p-1.5 bg-orange-50 text-orange-600 rounded-md">
-                  <Layers size={18} />
+                  <Archive size={18} />
                 </div>
                 <h2 className="font-semibold text-zinc-900">Box Library</h2>
               </div>
               <div className="flex items-center gap-2">
                 <button 
-                  onClick={handleSuggestBestBox}
-                  className="px-3 py-1.5 bg-orange-100 hover:bg-orange-200 text-orange-700 text-xs font-medium rounded-lg transition-colors"
-                  title="Suggest Best Box for selected part"
+                  onClick={handleAISuggestion}
+                  disabled={isSuggestingAI}
+                  className="px-3 py-1.5 bg-purple-100 hover:bg-purple-200 text-purple-700 text-xs font-medium rounded-lg transition-colors flex items-center gap-1 disabled:opacity-50"
+                  title="Use AI to suggest the optimal box dimensions"
                 >
-                  Suggest Best
+                  {isSuggestingAI ? (
+                    <RefreshCw size={14} className="animate-spin" />
+                  ) : (
+                    <Sparkles size={14} />
+                  )}
+                  AI Optimize Box
                 </button>
                 <button 
                   onClick={addBox}
@@ -1003,195 +1195,246 @@ export default function App() {
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="label-text">Length (mm)</label>
-                  <input 
-                    type="number" 
+                  <NumberInput 
                     value={box.length} 
                     onChange={e => {
-                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, length: Number(e.target.value)} : c);
+                      const val = Number(e.target.value);
+                      const newBoxes = boxes.map(c => {
+                        if (c.id === selectedBoxId) {
+                          const newName = c.name.startsWith('BC ') ? `BC ${val}x${c.width}x${c.height}` : c.name;
+                          return {...c, length: val, name: newName};
+                        }
+                        return c;
+                      });
                       setBoxes(newBoxes);
                     }}
                     className="input-field"
+                    min={0.1}
+                    max={10000}
                   />
                 </div>
                 <div>
                   <label className="label-text">Width (mm)</label>
-                  <input 
-                    type="number" 
+                  <NumberInput 
                     value={box.width} 
                     onChange={e => {
-                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, width: Number(e.target.value)} : c);
+                      const val = Number(e.target.value);
+                      const newBoxes = boxes.map(c => {
+                        if (c.id === selectedBoxId) {
+                          const newName = c.name.startsWith('BC ') ? `BC ${c.length}x${val}x${c.height}` : c.name;
+                          return {...c, width: val, name: newName};
+                        }
+                        return c;
+                      });
                       setBoxes(newBoxes);
                     }}
                     className="input-field"
+                    min={0.1}
+                    max={10000}
                   />
                 </div>
                 <div>
                   <label className="label-text">Height (mm)</label>
-                  <input 
-                    type="number" 
+                  <NumberInput 
                     value={box.height} 
                     onChange={e => {
-                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, height: Number(e.target.value)} : c);
+                      const val = Number(e.target.value);
+                      const newBoxes = boxes.map(c => {
+                        if (c.id === selectedBoxId) {
+                          const newName = c.name.startsWith('BC ') ? `BC ${c.length}x${c.width}x${val}` : c.name;
+                          return {...c, height: val, name: newName};
+                        }
+                        return c;
+                      });
                       setBoxes(newBoxes);
                     }}
                     className="input-field"
+                    min={0.1}
+                    max={10000}
                   />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label-text">Max Weight (kg)</label>
-                  <input 
-                    type="number" 
+                  <NumberInput 
                     value={box.maxWeight} 
                     onChange={e => {
                       const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, maxWeight: Number(e.target.value)} : c);
                       setBoxes(newBoxes);
                     }}
                     className="input-field"
+                    min={0.1}
+                    max={10000}
                   />
                 </div>
                 <div>
                   <label className="label-text">Empty Weight (kg)</label>
-                  <input 
-                    type="number" 
+                  <NumberInput 
                     value={box.emptyWeight} 
                     onChange={e => {
                       const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, emptyWeight: Number(e.target.value)} : c);
                       setBoxes(newBoxes);
                     }}
                     className="input-field"
+                    min={0}
+                    max={10000}
                   />
                 </div>
               </div>
             </div>
           </section>
 
-          {/* Pallet Configuration */}
-          <section className="glass-panel p-5">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="p-1.5 bg-purple-50 text-purple-600 rounded-md">
-                <Truck size={18} />
-              </div>
-              <h2 className="font-semibold text-zinc-900">Pallet Setup</h2>
-            </div>
-            <div className="space-y-4">
-              <div>
-                <label className="label-text">Pallet Name</label>
-                <input 
-                  type="text" 
-                  value={pallet.name} 
-                  onChange={e => setPallet({...pallet, name: e.target.value})}
-                  className="input-field"
-                />
-              </div>
-              <div>
-                <label className="label-text">Standard Type</label>
-                <div className="grid grid-cols-1 gap-2">
-                  {STANDARD_PALLETS.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => setPallet(p)}
-                      className={cn(
-                        "text-left px-3 py-2 rounded-lg border text-sm transition-all",
-                        pallet.id === p.id 
-                          ? "border-emerald-500 bg-emerald-50 text-emerald-900 ring-1 ring-emerald-500" 
-                          : "border-zinc-200 hover:border-zinc-300 text-zinc-600"
-                      )}
-                    >
-                      <div className="font-medium">{p.name}</div>
-                      <div className="text-xs opacity-70">{p.length} x {p.width} mm</div>
-                    </button>
-                  ))}
+          {/* Pallet Configuration - Only show if not in courier mode */}
+          {shippingMethod === 'pallet' && (
+            <section className="glass-panel p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <div className="p-1.5 bg-purple-50 text-purple-600 rounded-md">
+                  <Palette size={18} />
                 </div>
+                <h2 className="font-semibold text-zinc-900">Pallet Setup</h2>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-4">
                 <div>
-                  <label className="label-text">Max Height (mm)</label>
+                  <label className="label-text">Pallet Name</label>
                   <input 
-                    type="number" 
-                    value={pallet.maxHeight} 
-                    onChange={e => setPallet({...pallet, maxHeight: Number(e.target.value)})}
+                    type="text" 
+                    value={pallet.name} 
+                    onChange={e => setPallet({...pallet, name: e.target.value})}
                     className="input-field"
                   />
                 </div>
                 <div>
-                  <label className="label-text">Max Weight (kg)</label>
-                  <input 
-                    type="number" 
-                    value={pallet.maxWeight} 
-                    onChange={e => setPallet({...pallet, maxWeight: Number(e.target.value)})}
-                    className="input-field"
-                  />
-                </div>
-              </div>
-              {pallet.id === 'custom' && (
-                <>
-                  <div className="grid grid-cols-3 gap-3">
-                    <div>
-                      <label className="label-text">Length (mm)</label>
-                      <input 
-                        type="number" 
-                        value={pallet.length} 
-                        onChange={e => setPallet({...pallet, length: Number(e.target.value)})}
-                        className="input-field"
-                      />
-                    </div>
-                    <div>
-                      <label className="label-text">Width (mm)</label>
-                      <input 
-                        type="number" 
-                        value={pallet.width} 
-                        onChange={e => setPallet({...pallet, width: Number(e.target.value)})}
-                        className="input-field"
-                      />
-                    </div>
-                    <div>
-                      <label className="label-text">Height (mm)</label>
-                      <input 
-                        type="number" 
-                        value={pallet.height} 
-                        onChange={e => setPallet({...pallet, height: Number(e.target.value)})}
-                        className="input-field"
-                      />
-                    </div>
+                  <label className="label-text">Standard Type</label>
+                  <div className="grid grid-cols-1 gap-2">
+                    {STANDARD_PALLETS.map(p => (
+                      <button
+                        key={p.id}
+                        onClick={() => setPallet(p)}
+                        className={cn(
+                          "text-left px-3 py-2 rounded-lg border text-sm transition-all",
+                          pallet.id === p.id 
+                            ? "border-emerald-500 bg-emerald-50 text-emerald-900 ring-1 ring-emerald-500" 
+                            : "border-zinc-200 hover:border-zinc-300 text-zinc-600"
+                        )}
+                      >
+                        <div className="font-medium">{p.name}</div>
+                        <div className="text-xs opacity-70">{p.length} x {p.width} mm</div>
+                      </button>
+                    ))}
                   </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
                   <div>
-                    <label className="label-text">Empty Pallet Weight (kg)</label>
-                    <input 
-                      type="number" 
-                      value={pallet.emptyWeight} 
-                      onChange={e => setPallet({...pallet, emptyWeight: Number(e.target.value)})}
+                    <label className="label-text">Max Height (mm)</label>
+                    <NumberInput 
+                      value={pallet.maxHeight} 
+                      onChange={e => setPallet({...pallet, maxHeight: Number(e.target.value)})}
                       className="input-field"
+                      min={10}
+                      max={10000}
                     />
                   </div>
-                </>
-              )}
-            </div>
-          </section>
+                  <div>
+                    <label className="label-text">Max Weight (kg)</label>
+                    <NumberInput 
+                      value={pallet.maxWeight} 
+                      onChange={e => setPallet({...pallet, maxWeight: Number(e.target.value)})}
+                      className="input-field"
+                      min={10}
+                      max={10000}
+                    />
+                  </div>
+                </div>
+                {pallet.id === 'custom' && (
+                  <>
+                    <div className="grid grid-cols-3 gap-3">
+                      <div>
+                        <label className="label-text">Length (mm)</label>
+                        <NumberInput 
+                          value={pallet.length} 
+                          onChange={e => setPallet({...pallet, length: Number(e.target.value)})}
+                          className="input-field"
+                          min={100}
+                          max={10000}
+                        />
+                      </div>
+                      <div>
+                        <label className="label-text">Width (mm)</label>
+                        <NumberInput 
+                          value={pallet.width} 
+                          onChange={e => setPallet({...pallet, width: Number(e.target.value)})}
+                          className="input-field"
+                          min={100}
+                          max={10000}
+                        />
+                      </div>
+                      <div>
+                        <label className="label-text">Height (mm)</label>
+                        <NumberInput 
+                          value={pallet.height} 
+                          onChange={e => setPallet({...pallet, height: Number(e.target.value)})}
+                          className="input-field"
+                          min={10}
+                          max={10000}
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <label className="label-text">Empty Pallet Weight (kg)</label>
+                      <NumberInput 
+                        value={pallet.emptyWeight} 
+                        onChange={e => setPallet({...pallet, emptyWeight: Number(e.target.value)})}
+                        className="input-field"
+                        min={1}
+                        max={10000}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </section>
+          )}
 
           {/* Shipment Planning */}
           <section className="glass-panel p-5">
             <div className="flex items-center gap-2 mb-4">
               <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-md">
-                <LayoutGrid size={18} />
+                <Truck size={18} />
               </div>
-              <h2 className="font-semibold text-zinc-900">Shipment Planning</h2>
+              <h2 className="font-semibold text-zinc-900">Shipment Summary</h2>
             </div>
+            
             <div className="space-y-4">
               <div className="p-3 bg-zinc-50 rounded-lg border border-zinc-100 space-y-2">
+                <div className="flex justify-between text-xs">
+                  <span className="text-zinc-500">Shipping Method:</span>
+                  <span className={cn(
+                    "font-bold uppercase",
+                    shippingMethod === 'pallet' ? "text-emerald-600" : "text-blue-600"
+                  )}>
+                    {shippingMethod}
+                  </span>
+                </div>
                 <div className="flex justify-between text-xs">
                   <span className="text-zinc-500">Total Boxes to Order:</span>
                   <span className="font-bold text-zinc-900">{result.totalBoxesNeeded}</span>
                 </div>
-                <div className="flex justify-between text-xs">
-                  <span className="text-zinc-500">Total Pallets Needed:</span>
-                  <span className="font-bold text-emerald-600">{result.totalPalletsNeeded}</span>
-                </div>
+                {shippingMethod === 'pallet' && calculationMode === 'full' && (
+                  <div className="flex justify-between text-xs">
+                    <span className="text-zinc-500">Total Pallets Needed:</span>
+                    <span className="font-bold text-emerald-600">{result.totalPalletsNeeded}</span>
+                  </div>
+                )}
               </div>
               <button 
                 onClick={addSimulationToSession}
-                className="w-full py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-sm font-bold flex items-center justify-center gap-2 hover:bg-emerald-100 transition-colors"
+                className={cn(
+                  "w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all active:scale-95",
+                  shippingMethod === 'courier'
+                    ? "bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100"
+                    : "bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                )}
               >
                 <Plus size={16} />
                 Add to Session
@@ -1215,7 +1458,7 @@ export default function App() {
               </div>
               <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
                 {simulations.map((sim, idx) => (
-                  <SimulationItem key={sim.id} sim={sim} idx={idx} onRemove={removeSimulation} />
+                  <SimulationItem key={sim.id} sim={sim} idx={idx} onRemove={removeSimulation} onEdit={editSimulation} />
                 ))}
               </div>
               {sessionResult && (
@@ -1242,6 +1485,9 @@ export default function App() {
             simulations={simulations} 
             currentBox={box}
             currentPallet={pallet}
+            currentPart={part}
+            shippingMethod={shippingMethod}
+            calculationMode={calculationMode}
           />
 
           {/* Visualization Area */}
@@ -1253,15 +1499,17 @@ export default function App() {
                   <h3 className="font-semibold text-sm">Packing Visualization</h3>
                 </div>
                 <div className="flex bg-zinc-200/50 p-1 rounded-lg">
-                  <button 
-                    onClick={() => setViewMode('pallet')}
-                    className={cn(
-                      "px-3 py-1 text-[10px] font-bold uppercase rounded-md transition-all",
-                      viewMode === 'pallet' ? "bg-white text-emerald-600 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
-                    )}
-                  >
-                    Pallet View
-                  </button>
+                  {shippingMethod === 'pallet' && (
+                    <button 
+                      onClick={() => setViewMode('pallet')}
+                      className={cn(
+                        "px-3 py-1 text-[10px] font-bold uppercase rounded-md transition-all",
+                        viewMode === 'pallet' ? "bg-white text-emerald-600 shadow-sm" : "text-zinc-500 hover:text-zinc-700"
+                      )}
+                    >
+                      Pallet View
+                    </button>
+                  )}
                   <button 
                     onClick={() => setViewMode('box')}
                     className={cn(
@@ -1463,122 +1711,128 @@ export default function App() {
               </div>
             </section>
 
-            <section className="glass-panel p-5">
-              <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
-                <Info size={14} className="text-purple-500" />
-                Pallet Efficiency
-              </h3>
-              <div className="space-y-3">
-                <div className="flex justify-between text-sm">
-                  <span className="text-zinc-500">Total Weight (Full)</span>
-                  <span className="font-medium">{result.palletWeight.toFixed(1)} kg</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-zinc-500">Total Shipment Weight</span>
-                  <span className="font-medium text-emerald-600">
-                    {((result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded) * result.balancedPalletWeight + (result.isLastPalletDifferent ? result.lastPalletWeight : 0)).toFixed(1)} kg
-                  </span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-zinc-500">Load Dimensions</span>
-                  <span className="font-medium">{Math.round(result.loadDimensions.length)} x {Math.round(result.loadDimensions.width)} x {Math.round(result.loadDimensions.height)} mm</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-zinc-500">Weight Capacity Used</span>
-                  <span className="font-medium">{((result.palletWeight / pallet.maxWeight) * 100).toFixed(1)}%</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-zinc-500">Volume Used</span>
-                  <span className="font-medium">{(result.palletVolumeUtilization * 100).toFixed(1)}%</span>
-                </div>
-                <div className="w-full bg-zinc-100 h-2 rounded-full overflow-hidden mt-2">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: `${result.palletVolumeUtilization * 100}%` }}
-                    className="h-full bg-purple-500"
-                  />
-                </div>
-              </div>
-            </section>
-
-            <section className="glass-panel p-5 md:col-span-2">
-              <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
-                <Truck size={14} className="text-emerald-500" />
-                Pallet Distribution
-              </h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between p-4 bg-emerald-50 rounded-xl border border-emerald-100">
-                    <div>
-                      <div className="text-[10px] font-bold text-emerald-600 uppercase">Standard Pallets</div>
-                      <div className="text-2xl font-bold text-emerald-900">
-                        {result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded}
-                      </div>
-                      <div className="text-[10px] text-emerald-700 font-medium mt-1">
-                        Weight: <span className="font-bold">{result.balancedPalletWeight.toFixed(1)} kg</span>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="text-[10px] font-bold text-emerald-600 uppercase">Boxes / Pallet</div>
-                      <div className="text-2xl font-bold text-emerald-900">{result.boxesPerPalletBalanced}</div>
-                    </div>
+            {shippingMethod === 'pallet' && (
+              <section className="glass-panel p-5">
+                <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
+                  <Info size={14} className="text-purple-500" />
+                  Pallet Efficiency
+                </h3>
+                <div className="space-y-3">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-zinc-500">Total Weight (Full)</span>
+                    <span className="font-medium">{result.palletWeight.toFixed(1)} kg</span>
                   </div>
-                  
-                  {result.isLastPalletDifferent && (
-                    <div className="flex items-center justify-between p-4 bg-amber-50 rounded-xl border border-amber-100">
-                      <div>
-                        <div className="text-[10px] font-bold text-amber-600 uppercase">Last Pallet</div>
-                        <div className="text-2xl font-bold text-amber-900">1</div>
-                        <div className="text-[10px] text-amber-700 font-medium mt-1">
-                          Weight: <span className="font-bold">{result.lastPalletWeight.toFixed(1)} kg</span>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-zinc-500">Total Shipment Weight</span>
+                    <span className="font-medium text-emerald-600">
+                      {((result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded) * result.balancedPalletWeight + (result.isLastPalletDifferent ? result.lastPalletWeight : 0)).toFixed(1)} kg
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-zinc-500">Load Dimensions</span>
+                    <span className="font-medium">{Math.round(result.loadDimensions.length)} x {Math.round(result.loadDimensions.width)} x {Math.round(result.loadDimensions.height)} mm</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-zinc-500">Weight Capacity Used</span>
+                    <span className="font-medium">{((result.palletWeight / pallet.maxWeight) * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <span className="text-zinc-500">Volume Used</span>
+                    <span className="font-medium">{(result.palletVolumeUtilization * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="w-full bg-zinc-100 h-2 rounded-full overflow-hidden mt-2">
+                    <motion.div 
+                      initial={{ width: 0 }}
+                      animate={{ width: `${result.palletVolumeUtilization * 100}%` }}
+                      className="h-full bg-purple-500"
+                    />
+                  </div>
+                </div>
+              </section>
+            )}
+
+            {shippingMethod === 'pallet' && (
+              <section className="glass-panel p-5 md:col-span-2">
+                <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
+                  <Truck size={14} className="text-emerald-500" />
+                  Pallet Distribution
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                  <div className="space-y-4">
+                    {(!result.isLastPalletDifferent || result.totalPalletsNeeded > 1) && (
+                      <div className="flex items-center justify-between p-4 bg-emerald-50 rounded-xl border border-emerald-100">
+                        <div>
+                          <div className="text-[10px] font-bold text-emerald-600 uppercase">Standard Pallets</div>
+                          <div className="text-2xl font-bold text-emerald-900">
+                            {result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded}
+                          </div>
+                          <div className="text-[10px] text-emerald-700 font-medium mt-1">
+                            Weight: <span className="font-bold">{result.balancedPalletWeight.toFixed(1)} kg</span>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-[10px] font-bold text-emerald-600 uppercase">Boxes / Pallet</div>
+                          <div className="text-2xl font-bold text-emerald-900">{result.boxesPerPalletBalanced}</div>
                         </div>
                       </div>
-                      <div className="text-right">
-                        <div className="text-[10px] font-bold text-amber-600 uppercase">Boxes / Pallet</div>
-                        <div className="text-2xl font-bold text-amber-900">{result.lastPalletBoxes}</div>
+                    )}
+                    
+                    {result.isLastPalletDifferent && (
+                      <div className="flex items-center justify-between p-4 bg-amber-50 rounded-xl border border-amber-100">
+                        <div>
+                          <div className="text-[10px] font-bold text-amber-600 uppercase">{result.totalPalletsNeeded === 1 ? 'Pallet' : 'Last Pallet'}</div>
+                          <div className="text-2xl font-bold text-amber-900">1</div>
+                          <div className="text-[10px] text-amber-700 font-medium mt-1">
+                            Weight: <span className="font-bold">{result.lastPalletWeight.toFixed(1)} kg</span>
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-[10px] font-bold text-amber-600 uppercase">Boxes / Pallet</div>
+                          <div className="text-2xl font-bold text-amber-900">{result.lastPalletBoxes}</div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  
+                  <div className="flex flex-col justify-center space-y-3">
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <div className="w-2 h-2 rounded-full bg-emerald-600" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-xs text-zinc-600 leading-relaxed">
+                          Wysyłka zostanie podzielona na <span className="font-bold text-zinc-900">{result.totalPalletsNeeded}</span> palet.
+                        </p>
+                        {result.totalPalletsNeeded > 1 && (
+                          <p className="text-[10px] text-zinc-500 italic">
+                            {result.isLastPalletDifferent 
+                              ? `Pełna paleta: ${result.boxesPerPalletBalanced} boxów. Ostatnia paleta: ${result.lastPalletBoxes} boxów.`
+                              : `Każda paleta zawiera ${result.boxesPerPalletBalanced} boxów.`
+                            }
+                          </p>
+                        )}
                       </div>
                     </div>
-                  )}
-                </div>
-                
-                <div className="flex flex-col justify-center space-y-3">
-                  <div className="flex items-start gap-3">
-                    <div className="w-5 h-5 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <div className="w-2 h-2 rounded-full bg-emerald-600" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-xs text-zinc-600 leading-relaxed">
-                        Wysyłka zostanie podzielona na <span className="font-bold text-zinc-900">{result.totalPalletsNeeded}</span> palet.
-                      </p>
-                      {result.totalPalletsNeeded > 1 && (
+                    <div className="flex items-start gap-3">
+                      <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                        <div className="w-2 h-2 rounded-full bg-blue-600" />
+                      </div>
+                      <div className="space-y-1">
+                        <p className="text-xs text-zinc-600 leading-relaxed">
+                          Należy zamówić łącznie <span className="font-bold text-zinc-900">{result.totalBoxesNeeded}</span> kartonów typu <span className="italic">{box.name}</span>.
+                        </p>
                         <p className="text-[10px] text-zinc-500 italic">
-                          {result.isLastPalletDifferent 
-                            ? `Pełna paleta: ${result.boxesPerPalletBalanced} boxów. Ostatnia paleta: ${result.lastPalletBoxes} boxów.`
-                            : `Każda paleta zawiera ${result.boxesPerPalletBalanced} boxów.`
+                          {result.isLastBoxDifferent
+                            ? `Pełny karton: ${result.partsPerBox} szt. Ostatni karton: ${result.partsInLastBox} szt.`
+                            : `Każdy karton zawiera ${result.partsPerBox} sztuk części.`
                           }
                         </p>
-                      )}
-                    </div>
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                      <div className="w-2 h-2 rounded-full bg-blue-600" />
-                    </div>
-                    <div className="space-y-1">
-                      <p className="text-xs text-zinc-600 leading-relaxed">
-                        Należy zamówić łącznie <span className="font-bold text-zinc-900">{result.totalBoxesNeeded}</span> kartonów typu <span className="italic">{box.name}</span>.
-                      </p>
-                      <p className="text-[10px] text-zinc-500 italic">
-                        {result.isLastBoxDifferent
-                          ? `Pełny karton: ${result.partsPerBox} szt. Ostatni karton: ${result.partsInLastBox} szt.`
-                          : `Każdy karton zawiera ${result.partsPerBox} sztuk części.`
-                        }
-                      </p>
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            </section>
+              </section>
+            )}
           </div>
         </div>
       </main>
@@ -1588,6 +1842,67 @@ export default function App() {
         <p>© 2026 DIAM Palletizer - Advanced Logistics Optimization Engine</p>
         <p className="mt-1 italic">All calculations are based on rectangular bounding boxes and standard metric units.</p>
       </footer>
+
+      {/* AI Suggestion Modal */}
+      <AnimatePresence>
+        {aiSuggestionModal && (
+          <motion.div 
+            key="ai-suggestion-modal"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
+            onClick={() => setAiSuggestionModal(null)}
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="bg-gradient-to-r from-purple-600 to-indigo-600 p-6 text-white flex items-center gap-3">
+                <Sparkles size={24} className="text-purple-200" />
+                <div>
+                  <h2 className="text-xl font-bold">AI Box Suggestion</h2>
+                  <p className="text-purple-200 text-sm">Optimized for {shippingMethod === 'pallet' ? 'Pallet' : 'Courier'} Shipping</p>
+                </div>
+              </div>
+              
+              <div className="p-6 space-y-6">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
+                    <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Suggested Name</div>
+                    <div className="text-lg font-semibold text-zinc-900">{aiSuggestionModal.boxName}</div>
+                  </div>
+                  <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
+                    <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Dimensions (mm)</div>
+                    <div className="text-lg font-semibold text-zinc-900">
+                      {aiSuggestionModal.length} <span className="text-zinc-400 text-sm">L</span> × {aiSuggestionModal.width} <span className="text-zinc-400 text-sm">W</span> × {aiSuggestionModal.height} <span className="text-zinc-400 text-sm">H</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <div>
+                  <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Explanation & Strategy</div>
+                  <div className="bg-purple-50 p-5 rounded-xl border border-purple-100 text-purple-900 text-sm leading-relaxed whitespace-pre-wrap">
+                    {aiSuggestionModal.explanation}
+                  </div>
+                </div>
+                
+                <div className="flex justify-end pt-4 border-t border-zinc-100">
+                  <button 
+                    onClick={() => setAiSuggestionModal(null)}
+                    className="px-6 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white font-medium rounded-xl transition-colors"
+                  >
+                    Apply & Close
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

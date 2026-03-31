@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Trash2, Package, Box as BoxIcon } from 'lucide-react';
+import { ChevronDown, ChevronUp, Trash2, Package, Box as BoxIcon, Edit2 } from 'lucide-react';
 import { Simulation } from '../types';
 
-export const SimulationItem = ({ sim, idx, onRemove }: { sim: Simulation, idx: number, onRemove: (id: string) => void }) => {
+export const SimulationItem = ({ sim, idx, onRemove, onEdit }: { sim: Simulation, idx: number, onRemove: (id: string) => void, onEdit?: (sim: Simulation) => void }) => {
   const [isExpanded, setIsExpanded] = useState(false);
 
   return (
@@ -23,9 +23,19 @@ export const SimulationItem = ({ sim, idx, onRemove }: { sim: Simulation, idx: n
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {onEdit && (
+            <button 
+              onClick={(e) => { e.stopPropagation(); onEdit(sim); }}
+              className="p-1.5 text-zinc-400 hover:text-blue-500 hover:bg-blue-50 rounded-md transition-colors"
+              title="Edit Simulation"
+            >
+              <Edit2 size={14} />
+            </button>
+          )}
           <button 
             onClick={(e) => { e.stopPropagation(); onRemove(sim.id); }}
             className="p-1.5 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-md transition-colors"
+            title="Remove Simulation"
           >
             <Trash2 size={14} />
           </button>

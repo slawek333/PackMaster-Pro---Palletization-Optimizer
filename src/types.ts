@@ -9,6 +9,7 @@ export interface Part extends Dimensions {
   name: string;
   weight: number; // in kg
   orderQuantity: number;
+  maxPartsPerBox?: number;
 }
 
 export interface Container extends Dimensions {
@@ -52,6 +53,9 @@ export interface PackingResult {
   partsInLastBox: number;
   isLastBoxDifferent: boolean;
   loadDimensions: Dimensions;
+  stabilityScore?: number;
+  isStable?: boolean;
+  warnings?: string[];
 }
 
 export interface Simulation {
@@ -72,6 +76,8 @@ export interface PackedBox extends Dimensions {
   color: string;
   edgeColor: string;
   name: string;
+  isStable?: boolean;
+  supportArea?: number; // percentage of bottom area supported
 }
 
 export interface PalletLoad {
@@ -79,6 +85,9 @@ export interface PalletLoad {
   weight: number;
   volumeUtilization: number;
   loadDimensions: Dimensions;
+  stabilityScore?: number; // 0 to 1
+  isStable?: boolean;
+  warnings?: string[];
 }
 
 export interface SessionResult {
@@ -88,3 +97,6 @@ export interface SessionResult {
   totalWeight: number;
   overallUtilization: number;
 }
+
+export type ShippingMethod = 'pallet' | 'courier';
+export type CalculationMode = 'full' | 'boxes-only';
