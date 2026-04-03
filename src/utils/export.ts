@@ -1,6 +1,6 @@
 import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
-import { PackingResult, Part, Container, Pallet, Simulation, SessionResult, PalletLoad } from '../types';
+import { PackingResult, Part, Container, Pallet, PalletLoad } from '../types';
 
 function generateBoxVisualization(part: Part, box: Container, result: PackingResult, isLastBox: boolean): string {
   const canvas = document.createElement('canvas');
@@ -120,8 +120,6 @@ export async function exportToExcel(
   totalOrder: number,
   palletImage?: string,
   boxImage?: string,
-  simulations?: Simulation[],
-  sessionResult?: SessionResult | null,
   shippingMethod: 'pallet' | 'courier' = 'pallet',
   projectNumber?: string,
   lastBoxImage?: string,
@@ -187,40 +185,35 @@ export async function exportToExcel(
     return row;
   };
 
-  const isSession = simulations && simulations.length > 0 && sessionResult;
-  const sims = isSession ? simulations : [{ id: '1', part, box, quantity: totalOrder, result }];
+  const sims = [{ id: '1', part, box, quantity: totalOrder, result }];
   
   let palletsData: PalletLoad[] = [];
   if (shippingMethod === 'pallet') {
-    if (isSession && sessionResult) {
-      palletsData = sessionResult.pallets;
-    } else {
-      // Generate pallets data for single simulation
-      const fullPallets = result.totalPalletsNeeded - (result.isLastPalletDifferent ? 1 : 0);
-      
-      for (let i = 0; i < fullPallets; i++) {
-        palletsData.push({
-          boxes: Array(result.boxesPerPalletBalanced).fill({ partName: part.name, simulationId: '1' }),
-          weight: result.balancedPalletWeight,
-          volumeUtilization: result.palletVolumeUtilization,
-          loadDimensions: result.loadDimensions
-        });
-      }
-      if (result.isLastPalletDifferent && result.lastPalletBoxes > 0) {
-        // Calculate height for the last pallet based on the number of layers
-        const [l, w, h] = result.orientations.pallet.split('x').map(Number);
-        // Use boxesPerPallet / nz to get boxes per layer, as nx*ny is 0 for two-block layouts
-        const boxesPerLayer = result.palletGrid.nz > 0 ? Math.max(1, result.boxesPerPallet / result.palletGrid.nz) : 1;
-        const layers = Math.ceil(result.lastPalletBoxes / boxesPerLayer);
-        const lastPalletHeight = pallet.height + (layers * h);
+    // Generate pallets data for single simulation
+    const fullPallets = result.totalPalletsNeeded - (result.isLastPalletDifferent ? 1 : 0);
+    
+    for (let i = 0; i < fullPallets; i++) {
+      palletsData.push({
+        boxes: Array(result.boxesPerPalletBalanced).fill({ partName: part.name }),
+        weight: result.balancedPalletWeight,
+        volumeUtilization: result.palletVolumeUtilization,
+        loadDimensions: result.loadDimensions
+      });
+    }
+    if (result.isLastPalletDifferent && result.lastPalletBoxes > 0) {
+      // Calculate height for the last pallet based on the number of layers
+      const [l, w, h] = result.orientations.pallet.split('x').map(Number);
+      // Use boxesPerPallet / nz to get boxes per layer, as nx*ny is 0 for two-block layouts
+      const boxesPerLayer = result.palletGrid.nz > 0 ? Math.max(1, result.boxesPerPallet / result.palletGrid.nz) : 1;
+      const layers = Math.ceil(result.lastPalletBoxes / boxesPerLayer);
+      const lastPalletHeight = pallet.height + (layers * h);
 
-        palletsData.push({
-          boxes: Array(result.lastPalletBoxes).fill({ partName: part.name, simulationId: '1' }),
-          weight: result.lastPalletWeight,
-          volumeUtilization: result.palletVolumeUtilization * (result.lastPalletBoxes / result.boxesPerPalletBalanced),
-          loadDimensions: { length: result.loadDimensions.length, width: result.loadDimensions.width, height: lastPalletHeight }
-        });
-      }
+      palletsData.push({
+        boxes: Array(result.lastPalletBoxes).fill({ partName: part.name }),
+        weight: result.lastPalletWeight,
+        volumeUtilization: result.palletVolumeUtilization * (result.lastPalletBoxes / result.boxesPerPalletBalanced),
+        loadDimensions: { length: result.loadDimensions.length, width: result.loadDimensions.width, height: lastPalletHeight }
+      });
     }
   }
 
@@ -320,8 +313,7 @@ export async function exportToExcel(
       // Count parts per pallet
       const partCounts: { [key: string]: number } = {};
       p.boxes.forEach(c => {
-        const sim = sims.find(s => s.id === c.simulationId);
-        const partsInBox = sim ? sim.result.partsPerBox : result.partsPerBox;
+        const partsInBox = result.partsPerBox;
         partCounts[c.partName] = (partCounts[c.partName] || 0) + partsInBox;
       });
       
@@ -486,6 +478,6 @@ export async function exportToExcel(
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const prefix = projectNumber ? `${projectNumber}_` : '';
-  const fileName = isSession ? `${prefix}Consolidated_${shippingMethod}_Report.xlsx` : `${prefix}${shippingMethod}_Report_${part.name.replace(/\s+/g, '_')}.xlsx`;
+  const fileName = `${prefix}${shippingMethod}_Report_${part.name.replace(/\s+/g, '_')}.xlsx`;
   saveAs(blob, fileName);
 }

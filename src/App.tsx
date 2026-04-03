@@ -34,10 +34,9 @@ import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls, PerspectiveCamera, Edges, Center, Environment, ContactShadows, Bounds, useBounds, Text } from '@react-three/drei';
 import * as THREE from 'three';
 import gsap from 'gsap';
-import { Part, Container, Pallet, PackingResult, Simulation, SessionResult, PackedBox, PalletLoad } from './types';
-import { SimulationItem } from './components/SimulationItem';
+import { Part, Container, Pallet, PackingResult, PackedBox, PalletLoad } from './types';
 import { GeneralSummary } from './components/GeneralSummary';
-import { optimizePacking, packSessionSimulations, suggestBestBox } from './utils/packing';
+import { optimizePacking, suggestBestBox } from './utils/packing';
 import { exportToExcel } from './utils/export';
 import { sendEmailReport } from './utils/email';
 import { clsx, type ClassValue } from 'clsx';
@@ -289,9 +288,7 @@ const PackingCanvas = React.memo(({
   box, 
   pallet, 
   result,
-  sessionResult,
   selectedPalletIndex,
-  selectedSimulationId,
   onCapture,
   isLastBox
 }: { 
@@ -300,26 +297,16 @@ const PackingCanvas = React.memo(({
   box: Container, 
   pallet: Pallet, 
   result: PackingResult,
-  sessionResult?: SessionResult,
   selectedPalletIndex: number | null,
-  selectedSimulationId: string | null,
   onCapture?: (img: string) => void,
   isLastBox?: boolean
 }) => {
   const scale = 0.01;
   const [selectedId, setSelectedId] = useState<string | number | null>(null);
 
-  // Find the simulation for box view
-  const activeSim = useMemo(() => {
-    if (sessionResult && selectedSimulationId) {
-      return sessionResult.simulations.find(s => s.id === selectedSimulationId);
-    }
-    return null;
-  }, [sessionResult, selectedSimulationId]);
-
-  const currentPart = activeSim ? activeSim.part : part;
-  const currentBox = activeSim ? activeSim.box : box;
-  const currentResult = activeSim ? activeSim.result : result;
+  const currentPart = part;
+  const currentBox = box;
+  const currentResult = result;
 
   return (
     <div className="w-full h-full min-h-[700px] flex-1 cursor-move bg-zinc-50/50 relative">
@@ -342,85 +329,45 @@ const PackingCanvas = React.memo(({
           <Center top>
             {viewMode === 'pallet' ? (
               <group onClick={() => setSelectedId(null)}>
-                {sessionResult ? (
-                  // Session View (Multiple Pallets)
-                  (() => {
-                    const palletsToShow = selectedPalletIndex !== null 
-                      ? [sessionResult.pallets[selectedPalletIndex]] 
-                      : sessionResult.pallets;
-
-                    const palletsPerRow = Math.ceil(Math.sqrt(palletsToShow.length));
-                    const spacing = 600 * scale;
+                {/* Single Simulation View */}
+                {(() => {
+                  const palletsPerRow = Math.ceil(Math.sqrt(result.totalPalletsNeeded));
+                  const spacing = 400 * scale;
+                  
+                  return Array.from({ length: result.totalPalletsNeeded }).map((_, palletIdx) => {
+                    const row = Math.floor(palletIdx / palletsPerRow);
+                    const col = palletIdx % palletsPerRow;
+                    const offsetX = col * (pallet.length * scale + spacing);
+                    const offsetZ = row * (pallet.width * scale + spacing);
                     
-                    return palletsToShow.map((pLoad, idx) => {
-                      const palletIdx = selectedPalletIndex !== null ? selectedPalletIndex : idx;
-                      const row = Math.floor(idx / palletsPerRow);
-                      const col = idx % palletsPerRow;
-                      const offsetX = col * (pallet.length * scale + spacing);
-                      const offsetZ = row * (pallet.width * scale + spacing);
-                      
-                      return (
-                        <group key={palletIdx} position={[offsetX, 0, offsetZ]}>
-                          <PalletMesh pallet={pallet} />
-                          <group position={[-pallet.length * scale / 2, 0, -pallet.width * scale / 2]}>
-                            {pLoad.boxes.map((c, i) => (
+                    const isLast = palletIdx === result.totalPalletsNeeded - 1;
+                    const countOnThisPallet = isLast ? result.lastPalletBoxes : result.boxesPerPalletBalanced;
+                    const boxesToRender = result.boxes?.slice(0, countOnThisPallet) || [];
+
+                    return (
+                      <group key={palletIdx} position={[offsetX, 0, offsetZ]}>
+                        <PalletMesh pallet={pallet} />
+                        <group position={[-pallet.length * scale / 2, 0, -pallet.width * scale / 2]}>
+                          {boxesToRender.map((c, i) => {
+                            const globalId = `p${palletIdx}-c${i}`;
+                            return (
                               <MeshBox 
                                 key={i}
                                 position={[c.x * scale + c.length * scale / 2, c.z * scale + c.height * scale / 2, c.y * scale + c.width * scale / 2]}
                                 args={[c.length * scale - 0.0005, c.height * scale - 0.0005, c.width * scale - 0.0005]}
-                                color={c.color}
-                                edgeColor={c.edgeColor}
-                                onClick={() => setSelectedId(`p${palletIdx}-c${i}`)}
-                                isSelected={selectedId === `p${palletIdx}-c${i}`}
-                                isStable={c.isStable}
+                                color={c.color || "#fef3c7"}
+                                edgeColor={c.edgeColor || "#d97706"}
+                                onClick={() => setSelectedId(globalId)}
+                                isSelected={selectedId === globalId}
+                                isStable={result.isStable}
                               />
-                            ))}
-                          </group>
+                            );
+                          })}
                         </group>
-                      );
-                    });
-                  })()
-                ) : (
-                  // Single Simulation View
-                  (() => {
-                    const palletsPerRow = Math.ceil(Math.sqrt(result.totalPalletsNeeded));
-                    const spacing = 400 * scale;
-                    
-                    return Array.from({ length: result.totalPalletsNeeded }).map((_, palletIdx) => {
-                      const row = Math.floor(palletIdx / palletsPerRow);
-                      const col = palletIdx % palletsPerRow;
-                      const offsetX = col * (pallet.length * scale + spacing);
-                      const offsetZ = row * (pallet.width * scale + spacing);
-                      
-                      const isLast = palletIdx === result.totalPalletsNeeded - 1;
-                      const countOnThisPallet = isLast ? result.lastPalletBoxes : result.boxesPerPalletBalanced;
-                      const boxesToRender = result.boxes?.slice(0, countOnThisPallet) || [];
-
-                      return (
-                        <group key={palletIdx} position={[offsetX, 0, offsetZ]}>
-                          <PalletMesh pallet={pallet} />
-                          <group position={[-pallet.length * scale / 2, 0, -pallet.width * scale / 2]}>
-                            {boxesToRender.map((c, i) => {
-                              const globalId = `p${palletIdx}-c${i}`;
-                              return (
-                                <MeshBox 
-                                  key={i}
-                                  position={[c.x * scale + c.length * scale / 2, c.z * scale + c.height * scale / 2, c.y * scale + c.width * scale / 2]}
-                                  args={[c.length * scale - 0.0005, c.height * scale - 0.0005, c.width * scale - 0.0005]}
-                                  color={c.color || "#fef3c7"}
-                                  edgeColor={c.edgeColor || "#d97706"}
-                                  onClick={() => setSelectedId(globalId)}
-                                  isSelected={selectedId === globalId}
-                                  isStable={result.isStable}
-                                />
-                              );
-                            })}
-                          </group>
-                        </group>
-                      );
-                    });
-                  })()
-                )}
+                      </group>
+                    );
+                  });
+                })()}
               </group>
             ) : (
               <group onClick={() => setSelectedId(null)}>
@@ -647,13 +594,9 @@ export default function App() {
   const [shippingMethod, setShippingMethod] = useState<'pallet' | 'courier'>('pallet');
   const [calculationMode, setCalculationMode] = useState<'full' | 'boxes-only'>('full');
   const [selectedPalletIndex, setSelectedPalletIndex] = useState<number | null>(null);
-  const [selectedSimulationId, setSelectedSimulationId] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [projectNumber, setProjectNumber] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
-
-  const [simulations, setSimulations] = useState<Simulation[]>([]);
-  const [sessionResult, setSessionResult] = useState<SessionResult | null>(null);
 
   const part = useMemo(() => parts.find(p => p.id === selectedPartId) || parts[0], [parts, selectedPartId]);
   const box = useMemo(() => boxes.find(c => c.id === selectedBoxId) || boxes[0], [boxes, selectedBoxId]);
@@ -679,59 +622,6 @@ export default function App() {
       // Update the currently selected box with the suggested dimensions
       setBoxes(prev => prev.map(b => b.id === selectedBoxId ? { ...b, ...suggestedBox, id: b.id } : b));
     }
-  };
-
-  const addSimulationToSession = () => {
-    const newSim: Simulation = {
-      id: Math.random().toString(36).substr(2, 9),
-      part,
-      box,
-      quantity: part.orderQuantity,
-      result
-    };
-    const newSims = [...simulations, newSim];
-    setSimulations(newSims);
-    const newSessionResult = packSessionSimulations(newSims, pallet);
-    setSessionResult(newSessionResult);
-    if (!selectedSimulationId) setSelectedSimulationId(newSim.id);
-  };
-
-  const removeSimulation = (id: string) => {
-    const newSims = simulations.filter(s => s.id !== id);
-    setSimulations(newSims);
-    if (newSims.length > 0) {
-      setSessionResult(packSessionSimulations(newSims, pallet));
-      if (selectedSimulationId === id) {
-        setSelectedSimulationId(newSims[0].id);
-      }
-    } else {
-      setSessionResult(null);
-      setSelectedSimulationId(null);
-    }
-  };
-
-  const editSimulation = (sim: Simulation) => {
-    // Update the part and box lists if they don't exist, or just update their values
-    setParts(prev => {
-      const exists = prev.find(p => p.id === sim.part.id);
-      if (exists) {
-        return prev.map(p => p.id === sim.part.id ? sim.part : p);
-      }
-      return [...prev, sim.part];
-    });
-    setBoxes(prev => {
-      const exists = prev.find(b => b.id === sim.box.id);
-      if (exists) {
-        return prev.map(b => b.id === sim.box.id ? sim.box : b);
-      }
-      return [...prev, sim.box];
-    });
-    
-    setSelectedPartId(sim.part.id);
-    setSelectedBoxId(sim.box.id);
-    
-    // Remove it from the session so it can be re-added
-    removeSimulation(sim.id);
   };
 
   const handleExport = async (type: 'excel' | 'email') => {
@@ -782,7 +672,7 @@ export default function App() {
   };
 
   const generateAIInsights = async () => {
-    if (!result && !sessionResult) return;
+    if (!result) return;
     
     setIsAnalyzing(true);
     setAiInsights(null);
@@ -791,26 +681,17 @@ export default function App() {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
       
       let promptData = '';
-      if (sessionResult) {
-        promptData = `
-          Total Pallets Needed: ${sessionResult.pallets.length}
-          Total Weight: ${sessionResult.totalWeight.toFixed(1)} kg
-          Overall Volume Utilization: ${(sessionResult.overallUtilization * 100).toFixed(1)}%
-          Total Boxes Packed: ${sessionResult.totalBoxes}
-        `;
-      } else if (result) {
-        const totalShipmentWeight = ((result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded) * result.balancedPalletWeight + (result.isLastPalletDifferent ? result.lastPalletWeight : 0)).toFixed(1);
-        promptData = `
-          Part: ${part.name} (${part.length}x${part.width}x${part.height}mm, ${part.weight}kg)
-          Box: ${box.name} (${box.length}x${box.width}x${box.height}mm)
-          Parts per Box: ${result.partsPerBox}
-          Box Volume Utilization: ${(result.boxVolumeUtilization * 100).toFixed(1)}%
-          Total Pallets Needed: ${result.totalPalletsNeeded}
-          Boxes per Full Pallet: ${result.boxesPerPallet}
-          Total Shipment Weight: ${totalShipmentWeight} kg
-          Pallet Volume Utilization: ${(result.palletVolumeUtilization * 100).toFixed(1)}%
-        `;
-      }
+      const totalShipmentWeight = ((result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded) * result.balancedPalletWeight + (result.isLastPalletDifferent ? result.lastPalletWeight : 0)).toFixed(1);
+      promptData = `
+        Part: ${part.name} (${part.length}x${part.width}x${part.height}mm, ${part.weight}kg)
+        Box: ${box.name} (${box.length}x${box.width}x${box.height}mm)
+        Parts per Box: ${result.partsPerBox}
+        Box Volume Utilization: ${(result.boxVolumeUtilization * 100).toFixed(1)}%
+        Total Pallets Needed: ${result.totalPalletsNeeded}
+        Boxes per Full Pallet: ${result.boxesPerPallet}
+        Total Shipment Weight: ${totalShipmentWeight} kg
+        Pallet Volume Utilization: ${(result.palletVolumeUtilization * 100).toFixed(1)}%
+      `;
 
       const prompt = `You are an expert logistics and supply chain AI assistant for DIAM Palletizer.
       Please analyze the following palletization and packing data and provide a short, professional summary (max 3-4 sentences).
@@ -837,9 +718,9 @@ export default function App() {
   useEffect(() => {
     if (exportStep === 'final' && palletImage && boxImage) {
       if (exportType === 'excel') {
-        exportToExcel(part, box, pallet, result, part.orderQuantity, palletImage, boxImage, simulations, sessionResult, shippingMethod, projectNumber, lastBoxImage, lastPalletImage);
+        exportToExcel(part, box, pallet, result, part.orderQuantity, palletImage, boxImage, shippingMethod, projectNumber, lastBoxImage, lastPalletImage);
       } else if (exportType === 'email') {
-        sendEmailReport(part, box, pallet, result, shippingMethod, projectNumber, simulations, sessionResult, deliveryAddress, palletImage, boxImage, lastBoxImage, lastPalletImage);
+        sendEmailReport(part, box, pallet, result, shippingMethod, projectNumber, deliveryAddress, palletImage, boxImage, lastBoxImage, lastPalletImage);
       }
       setExportStep('idle');
       setExportType(null);
@@ -848,7 +729,7 @@ export default function App() {
       setBoxImage(undefined);
       setLastBoxImage(undefined);
     }
-  }, [exportStep, exportType, palletImage, lastPalletImage, boxImage, lastBoxImage, part, box, pallet, result, simulations, sessionResult, shippingMethod, projectNumber, deliveryAddress]);
+  }, [exportStep, exportType, palletImage, lastPalletImage, boxImage, lastBoxImage, part, box, pallet, result, shippingMethod, projectNumber, deliveryAddress]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -926,9 +807,9 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col">
+    <div className="min-h-screen flex flex-col bg-zinc-100/50">
       {/* Header */}
-      <header className="h-20 bg-white text-zinc-900 flex items-center px-8 sticky top-0 z-50 border-b border-zinc-200 shadow-sm backdrop-blur-md bg-white/90">
+      <header className="h-20 bg-white/80 text-zinc-900 flex items-center px-8 sticky top-0 z-50 border-b border-zinc-200 shadow-sm backdrop-blur-xl">
         <div className="flex items-center gap-4">
           <div className="relative">
             <div className="absolute -inset-1 bg-gradient-to-r from-zinc-900 to-zinc-600 rounded-xl blur opacity-10 group-hover:opacity-20 transition duration-1000 group-hover:duration-200"></div>
@@ -940,8 +821,8 @@ export default function App() {
             </svg>
           </div>
           <div>
-            <h1 className="font-inter font-black text-2xl tracking-[0.2em] text-zinc-900 leading-none">DIAM</h1>
-            <p className="text-[10px] font-bold text-zinc-400 tracking-widest uppercase mt-1">Palletizer</p>
+            <h1 className="font-inter font-thin text-2xl tracking-[0.2em] text-zinc-900 leading-none">DIAM</h1>
+            <p className="text-[10px] font-black text-zinc-400 tracking-widest uppercase mt-1">Palletizer</p>
           </div>
         </div>
 
@@ -975,17 +856,15 @@ export default function App() {
         {/* Left Column: Inputs */}
         <div className="lg:col-span-4 space-y-6">
           {/* Project & Shipping Settings */}
-          <section className="glass-panel p-6 bg-white border-zinc-200 shadow-xl shadow-zinc-200/50 rounded-3xl">
+          <section className="glass-panel p-6 bg-white border-zinc-200 shadow-xl shadow-zinc-200/30 rounded-[2.5rem]">
             <div className="flex flex-col gap-6">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-zinc-200">
-                    <Archive size={20} />
-                  </div>
-                  <div>
-                    <h2 className="font-bold text-zinc-900">Project Settings</h2>
-                    <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-tight">Identification & Method</p>
-                  </div>
+              <div className="flex items-center gap-4 mb-2">
+                <div className="w-14 h-14 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-zinc-200 tilted-icon-container">
+                  <Archive size={28} />
+                </div>
+                <div>
+                  <h2 className="font-black text-2xl text-zinc-900 tracking-tight leading-none">Project Settings</h2>
+                  <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-1">Identification & Method</p>
                 </div>
               </div>
 
@@ -1064,20 +943,23 @@ export default function App() {
           </section>
 
           {/* Part Library */}
-          <section className="glass-panel p-5 border-l-4 border-l-blue-500">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg tilted-icon-container">
-                  <Package size={18} />
+          <section className="glass-panel p-6 bg-blue-50/30 border-blue-100 shadow-xl shadow-blue-900/5 rounded-[2.5rem]">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 bg-blue-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200 tilted-icon-container">
+                  <Package size={28} />
                 </div>
-                <h2 className="font-semibold text-zinc-900">Part Library</h2>
+                <div>
+                  <h2 className="font-black text-2xl text-blue-900 tracking-tight leading-none">Part Library</h2>
+                  <p className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em] mt-1">Component Specifications</p>
+                </div>
               </div>
               <button 
                 onClick={addPart}
-                className="p-1.5 hover:bg-zinc-100 rounded-lg text-zinc-500 transition-colors"
+                className="w-10 h-10 flex items-center justify-center bg-white hover:bg-blue-50 rounded-xl text-blue-600 transition-all shadow-sm border border-blue-100 active:scale-95"
                 title="Add New Part"
               >
-                <Plus size={18} />
+                <Plus size={20} />
               </button>
             </div>
             
@@ -1239,34 +1121,37 @@ export default function App() {
           </section>
 
           {/* Box Library */}
-          <section className="glass-panel p-5 border-l-4 border-l-orange-500">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-orange-50 text-orange-600 rounded-lg tilted-icon-container">
-                  <Box size={18} />
+          <section className="glass-panel p-6 bg-orange-50/30 border-orange-100 shadow-xl shadow-orange-900/5 rounded-[2.5rem]">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-4">
+                <div className="w-14 h-14 bg-orange-500 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-orange-200 tilted-icon-container">
+                  <Box size={28} />
                 </div>
-                <h2 className="font-semibold text-zinc-900">Box Library</h2>
+                <div>
+                  <h2 className="font-black text-2xl text-orange-900 tracking-tight leading-none">Box Library</h2>
+                  <p className="text-[10px] font-black text-orange-400 uppercase tracking-[0.2em] mt-1">Container Options</p>
+                </div>
               </div>
               <div className="flex items-center gap-2">
                 <button 
                   onClick={handleAISuggestion}
                   disabled={isSuggestingAI}
-                  className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-medium rounded-lg transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-70"
+                  className="px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-black rounded-xl transition-all shadow-lg shadow-purple-200 flex items-center gap-2 disabled:opacity-70 active:scale-95"
                   title="Use AI to suggest the optimal box dimensions"
                 >
                   {isSuggestingAI ? (
-                    <RotateCcw size={14} className="animate-spin" />
+                    <RotateCcw size={16} className="animate-spin" />
                   ) : (
-                    <Sparkles size={14} />
+                    <Sparkles size={16} />
                   )}
-                  AI Optimize Box
+                  AI OPTIMIZE
                 </button>
                 <button 
                   onClick={addBox}
-                  className="p-1.5 hover:bg-zinc-100 rounded-lg text-zinc-500 transition-colors"
+                  className="w-10 h-10 flex items-center justify-center bg-white hover:bg-orange-50 rounded-xl text-orange-600 transition-all shadow-sm border border-orange-100 active:scale-95"
                   title="Add New Box"
                 >
-                  <Plus size={18} />
+                  <Plus size={20} />
                 </button>
               </div>
             </div>
@@ -1410,12 +1295,15 @@ export default function App() {
 
           {/* Pallet Configuration - Only show if not in courier mode */}
           {shippingMethod === 'pallet' && (
-            <section className="glass-panel p-5 border-l-4 border-l-emerald-500">
-              <div className="flex items-center gap-2 mb-4">
-                <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg tilted-icon-container">
-                  <Layers size={18} />
+            <section className="glass-panel p-6 bg-emerald-50/30 border-emerald-100 shadow-xl shadow-emerald-900/5 rounded-[2.5rem]">
+              <div className="flex items-center gap-4 mb-6">
+                <div className="w-14 h-14 bg-emerald-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-200 tilted-icon-container">
+                  <Layers size={28} />
                 </div>
-                <h2 className="font-semibold text-zinc-900">Pallet Setup</h2>
+                <div>
+                  <h2 className="font-black text-2xl text-emerald-900 tracking-tight leading-none">Pallet Setup</h2>
+                  <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.2em] mt-1">Platform Configuration</p>
+                </div>
               </div>
               <div className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
@@ -1536,92 +1424,59 @@ export default function App() {
           )}
 
           {/* Shipment Planning */}
-          <section className="glass-panel p-5 border-l-4 border-l-zinc-900">
-            <div className="flex items-center gap-2 mb-4">
-              <div className="p-1.5 bg-zinc-900 text-white rounded-lg tilted-icon-container">
-                <Settings size={18} />
+          <section className="glass-panel p-6 bg-zinc-900 border-zinc-800 shadow-2xl shadow-zinc-900/20 rounded-[2.5rem] text-white">
+            <div className="flex items-center gap-4 mb-6">
+              <div className="w-14 h-14 bg-white text-zinc-900 rounded-2xl flex items-center justify-center shadow-lg tilted-icon-container">
+                <Settings size={28} />
               </div>
-              <h2 className="font-semibold text-zinc-900">Shipment Summary</h2>
+              <div>
+                <h2 className="font-black text-2xl text-white tracking-tight leading-none">Shipment Summary</h2>
+                <p className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em] mt-1">Final Logistics Overview</p>
+              </div>
             </div>
             
             <div className="space-y-4">
-              <div className="p-3 bg-zinc-50 rounded-lg border border-zinc-100 space-y-2">
+              <div className="p-4 bg-white/5 rounded-2xl border border-white/10 space-y-3">
                 <div className="flex justify-between text-xs">
-                  <span className="text-zinc-500">Shipping Method:</span>
+                  <span className="text-zinc-400">Shipping Method:</span>
                   <span className={cn(
-                    "font-bold uppercase",
-                    shippingMethod === 'pallet' ? "text-emerald-600" : "text-blue-600"
+                    "font-black uppercase tracking-widest",
+                    shippingMethod === 'pallet' ? "text-emerald-400" : "text-blue-400"
                   )}>
                     {shippingMethod}
                   </span>
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-zinc-500">Total Boxes to Order:</span>
-                  <span className="font-bold text-zinc-900">{result.totalBoxesNeeded}</span>
+                  <span className="text-zinc-400">Total Boxes to Order:</span>
+                  <span className="font-black text-white">{result.totalBoxesNeeded}</span>
                 </div>
                 {shippingMethod === 'pallet' && calculationMode === 'full' && (
                   <div className="flex justify-between text-xs">
-                    <span className="text-zinc-500">Total Pallets Needed:</span>
-                    <span className="font-bold text-emerald-600">{result.totalPalletsNeeded}</span>
+                    <span className="text-zinc-400">Total Pallets Needed:</span>
+                    <span className="font-black text-emerald-400">{result.totalPalletsNeeded}</span>
                   </div>
                 )}
               </div>
               <button 
-                onClick={addSimulationToSession}
+                onClick={() => handleExport('excel')}
                 className={cn(
-                  "w-full py-2 rounded-lg text-sm font-bold flex items-center justify-center gap-2 transition-all active:scale-95",
+                  "w-full py-4 rounded-2xl text-sm font-black flex items-center justify-center gap-3 transition-all active:scale-95 shadow-xl",
                   shippingMethod === 'courier'
-                    ? "bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100"
-                    : "bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100"
+                    ? "bg-blue-600 text-white shadow-blue-900/20 hover:bg-blue-500"
+                    : "bg-emerald-600 text-white shadow-emerald-900/20 hover:bg-emerald-500"
                 )}
               >
-                <Plus size={16} />
-                Add to Session
+                <Download size={20} />
+                GENERATE REPORT
               </button>
             </div>
           </section>
-
-          {/* Active Session */}
-          {simulations.length > 0 && (
-            <section className="glass-panel p-5 border-l-4 border-l-indigo-500">
-              <div className="flex items-center justify-between mb-4">
-                <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg tilted-icon-container">
-                    <LayoutGrid size={18} />
-                  </div>
-                  <h2 className="font-semibold text-zinc-900">Active Session</h2>
-                </div>
-                <span className="text-[10px] font-bold bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full">
-                  {simulations.length} Simulations
-                </span>
-              </div>
-              <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
-                {simulations.map((sim, idx) => (
-                  <SimulationItem key={sim.id} sim={sim} idx={idx} onRemove={removeSimulation} onEdit={editSimulation} />
-                ))}
-              </div>
-              {sessionResult && (
-                <div className="mt-4 pt-4 border-t border-zinc-100 space-y-2">
-                  <div className="flex justify-between text-xs">
-                    <span className="text-zinc-500">Total Pallets (Mixed):</span>
-                    <span className="font-bold text-emerald-600">{sessionResult.pallets.length}</span>
-                  </div>
-                  <div className="flex justify-between text-xs">
-                    <span className="text-zinc-500">Total Session Weight:</span>
-                    <span className="font-bold text-zinc-900">{sessionResult.totalWeight.toFixed(1)} kg</span>
-                  </div>
-                </div>
-              )}
-            </section>
-          )}
         </div>
 
         {/* Right Column: Results & Visualization */}
         <div className="lg:col-span-8 space-y-6">
           <GeneralSummary 
             result={result} 
-            sessionResult={sessionResult} 
-            simulations={simulations} 
             currentBox={box}
             currentPallet={pallet}
             currentPart={part}
@@ -1669,49 +1524,29 @@ export default function App() {
             <div className="flex-1 flex flex-col bg-zinc-100/30 relative overflow-hidden">
               {/* Navigation Controls */}
               <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 max-w-[200px]">
-                {viewMode === 'pallet' && sessionResult && (
+                {viewMode === 'pallet' && result.totalPalletsNeeded > 1 && (
                   <div className="bg-white/80 backdrop-blur-md p-2 rounded-xl border border-zinc-200 shadow-sm space-y-2">
-                    <div className="text-[10px] font-bold text-zinc-400 uppercase px-1">Pallet Selection</div>
+                    <div className="text-[10px] font-black text-zinc-400 uppercase px-1">Pallet Selection</div>
                     <div className="flex flex-wrap gap-1">
                       <button
                         onClick={() => setSelectedPalletIndex(null)}
                         className={cn(
-                          "px-2 py-1 rounded text-[10px] font-bold transition-all",
+                          "px-2 py-1 rounded text-[10px] font-black transition-all",
                           selectedPalletIndex === null ? "bg-emerald-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
                         )}
                       >
                         ALL
                       </button>
-                      {sessionResult.pallets.map((_, idx) => (
+                      {Array.from({ length: result.totalPalletsNeeded }).map((_, idx) => (
                         <button
                           key={idx}
                           onClick={() => setSelectedPalletIndex(idx)}
                           className={cn(
-                            "px-2 py-1 rounded text-[10px] font-bold transition-all",
+                            "px-2 py-1 rounded text-[10px] font-black transition-all",
                             selectedPalletIndex === idx ? "bg-emerald-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
                           )}
                         >
                           P{idx + 1}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {viewMode === 'box' && sessionResult && (
-                  <div className="bg-white/80 backdrop-blur-md p-2 rounded-xl border border-zinc-200 shadow-sm space-y-2">
-                    <div className="text-[10px] font-bold text-zinc-400 uppercase px-1">Simulation Selection</div>
-                    <div className="flex flex-col gap-1 max-h-[150px] overflow-y-auto custom-scrollbar">
-                      {sessionResult.simulations.map((sim) => (
-                        <button
-                          key={sim.id}
-                          onClick={() => setSelectedSimulationId(sim.id)}
-                          className={cn(
-                            "px-2 py-1 rounded text-[10px] font-bold text-left truncate transition-all",
-                            selectedSimulationId === sim.id ? "bg-blue-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
-                          )}
-                        >
-                          {sim.part.name}
                         </button>
                       ))}
                     </div>
@@ -1725,9 +1560,7 @@ export default function App() {
                 box={box}
                 pallet={pallet}
                 result={result}
-                sessionResult={sessionResult || undefined}
                 selectedPalletIndex={selectedPalletIndex}
-                selectedSimulationId={selectedSimulationId}
               />
 
               {/* Hidden Capture Canvases */}
@@ -1750,12 +1583,9 @@ export default function App() {
                           pallet={pallet}
                           result={result}
                           selectedPalletIndex={0}
-                          selectedSimulationId={null}
                           onCapture={(img) => {
                             setPalletImage(img);
-                            const hasDifferentLastPallet = sessionResult 
-                              ? (sessionResult.pallets.length > 1 && sessionResult.pallets[0].boxes.length !== sessionResult.pallets[sessionResult.pallets.length - 1].boxes.length)
-                              : (result.totalPalletsNeeded > 1 && result.isLastPalletDifferent);
+                            const hasDifferentLastPallet = (result.totalPalletsNeeded > 1 && result.isLastPalletDifferent);
                             if (hasDifferentLastPallet) {
                               setExportStep('lastPallet');
                             } else {
@@ -1773,8 +1603,7 @@ export default function App() {
                           box={box}
                           pallet={pallet}
                           result={result}
-                          selectedPalletIndex={sessionResult ? sessionResult.pallets.length - 1 : result.totalPalletsNeeded - 1}
-                          selectedSimulationId={null}
+                          selectedPalletIndex={result.totalPalletsNeeded - 1}
                           onCapture={(img) => {
                             setLastPalletImage(img);
                             setExportStep('box');
@@ -1791,7 +1620,6 @@ export default function App() {
                           pallet={pallet}
                           result={result}
                           selectedPalletIndex={null}
-                          selectedSimulationId={null}
                           onCapture={(img) => {
                             setBoxImage(img);
                             if (result.isLastBoxDifferent) {
@@ -1812,7 +1640,6 @@ export default function App() {
                           pallet={pallet}
                           result={result}
                           selectedPalletIndex={null}
-                          selectedSimulationId={null}
                           isLastBox={true}
                           onCapture={(img) => {
                             setLastBoxImage(img);
@@ -2024,7 +1851,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="p-6 text-center text-zinc-400 text-xs border-t border-zinc-100 bg-white">
-        <p>© 2026 <span className="font-inter font-bold">DIAM</span> Palletizer - Advanced Logistics Optimization Engine</p>
+        <p>© 2026 <span className="font-inter font-thin">DIAM</span> Palletizer - Advanced Logistics Optimization Engine</p>
         <p className="mt-1 italic">All calculations are based on rectangular bounding boxes and standard metric units.</p>
       </footer>
     </div>

@@ -1,4 +1,4 @@
-import { PackingResult, Part, Container, Pallet, Simulation, SessionResult, PalletLoad } from '../types';
+import { PackingResult, Part, Container, Pallet, PalletLoad } from '../types';
 import { saveAs } from 'file-saver';
 
 export function generateEML(
@@ -8,8 +8,6 @@ export function generateEML(
   result: PackingResult,
   shippingMethod: 'pallet' | 'courier',
   projectNumber?: string,
-  simulations?: Simulation[],
-  sessionResult?: SessionResult | null,
   deliveryAddress?: string,
   palletImage?: string,
   boxImage?: string,
@@ -19,36 +17,31 @@ export function generateEML(
   const subject = `Packing Report - ${projectNumber || 'DIAM'}`;
   const date = new Date().toUTCString();
   
-  const isSession = simulations && simulations.length > 0 && sessionResult;
-  const sims = isSession ? simulations : [{ id: '1', part, box, quantity: part.orderQuantity, result }];
+  const sims = [{ id: '1', part, box, quantity: part.orderQuantity, result }];
   
   let palletsData: PalletLoad[] = [];
   if (shippingMethod === 'pallet') {
-    if (isSession && sessionResult) {
-      palletsData = sessionResult.pallets;
-    } else {
-      const fullPallets = result.totalPalletsNeeded - (result.isLastPalletDifferent ? 1 : 0);
-      for (let i = 0; i < fullPallets; i++) {
-        palletsData.push({
-          boxes: Array(result.boxesPerPalletBalanced).fill({ partName: part.name, simulationId: '1' }),
-          weight: result.balancedPalletWeight,
-          volumeUtilization: result.palletVolumeUtilization,
-          loadDimensions: result.loadDimensions
-        });
-      }
-      if (result.isLastPalletDifferent && result.lastPalletBoxes > 0) {
-        const [l, w, h] = result.orientations.pallet.split('x').map(Number);
-        const boxesPerLayer = result.palletGrid.nz > 0 ? Math.max(1, result.boxesPerPallet / result.palletGrid.nz) : 1;
-        const layers = Math.ceil(result.lastPalletBoxes / boxesPerLayer);
-        const lastPalletHeight = pallet.height + (layers * h);
+    const fullPallets = result.totalPalletsNeeded - (result.isLastPalletDifferent ? 1 : 0);
+    for (let i = 0; i < fullPallets; i++) {
+      palletsData.push({
+        boxes: Array(result.boxesPerPalletBalanced).fill({ partName: part.name }),
+        weight: result.balancedPalletWeight,
+        volumeUtilization: result.palletVolumeUtilization,
+        loadDimensions: result.loadDimensions
+      });
+    }
+    if (result.isLastPalletDifferent && result.lastPalletBoxes > 0) {
+      const [l, w, h] = result.orientations.pallet.split('x').map(Number);
+      const boxesPerLayer = result.palletGrid.nz > 0 ? Math.max(1, result.boxesPerPallet / result.palletGrid.nz) : 1;
+      const layers = Math.ceil(result.lastPalletBoxes / boxesPerLayer);
+      const lastPalletHeight = pallet.height + (layers * h);
 
-        palletsData.push({
-          boxes: Array(result.lastPalletBoxes).fill({ partName: part.name, simulationId: '1' }),
-          weight: result.lastPalletWeight,
-          volumeUtilization: result.palletVolumeUtilization * (result.lastPalletBoxes / result.boxesPerPalletBalanced),
-          loadDimensions: { length: result.loadDimensions.length, width: result.loadDimensions.width, height: lastPalletHeight }
-        });
-      }
+      palletsData.push({
+        boxes: Array(result.lastPalletBoxes).fill({ partName: part.name }),
+        weight: result.lastPalletWeight,
+        volumeUtilization: result.palletVolumeUtilization * (result.lastPalletBoxes / result.boxesPerPalletBalanced),
+        loadDimensions: { length: result.loadDimensions.length, width: result.loadDimensions.width, height: lastPalletHeight }
+      });
     }
   }
 
@@ -228,8 +221,7 @@ export function generateEML(
       
       const partCounts: { [key: string]: number } = {};
       p.boxes.forEach(c => {
-        const sim = sims.find(s => s.id === c.simulationId);
-        const partsInBox = sim ? sim.result.partsPerBox : result.partsPerBox;
+        const partsInBox = result.partsPerBox;
         partCounts[c.partName] = (partCounts[c.partName] || 0) + partsInBox;
       });
       
@@ -347,22 +339,16 @@ export function sendEmailReport(
   result: PackingResult,
   shippingMethod: 'pallet' | 'courier',
   projectNumber?: string,
-  simulations?: Simulation[],
-  sessionResult?: SessionResult | null,
   deliveryAddress?: string,
   palletImage?: string,
   boxImage?: string,
   lastBoxImage?: string,
   lastPalletImage?: string
 ) {
-  const emlContent = generateEML(part, box, pallet, result, shippingMethod, projectNumber, simulations, sessionResult, deliveryAddress, palletImage, boxImage, lastBoxImage, lastPalletImage);
+  const emlContent = generateEML(part, box, pallet, result, shippingMethod, projectNumber, deliveryAddress, palletImage, boxImage, lastBoxImage, lastPalletImage);
   const blob = new Blob([emlContent], { type: 'message/rfc822' });
   const fileName = `Packing_Report_${projectNumber || 'DIAM'}.eml`;
   saveAs(blob, fileName);
   
   // Removed window.location.href mailto to avoid ERR_BLOCKED_BY_RESPONSE in iframe
-}
-
-function isSession(sims?: Simulation[]): sims is Simulation[] {
-  return !!sims && sims.length > 0;
 }

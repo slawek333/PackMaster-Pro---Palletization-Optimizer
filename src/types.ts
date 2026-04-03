@@ -78,17 +78,8 @@ export interface PackingResult {
   warnings?: string[];
 }
 
-export interface Simulation {
-  id: string;
-  part: Part;
-  box: Container;
-  quantity: number;
-  result: PackingResult;
-}
-
 export interface PackedBox extends Dimensions {
   id: string; // box id
-  simulationId: string;
   partName: string;
   x: number;
   y: number;
@@ -108,14 +99,6 @@ export interface PalletLoad {
   stabilityScore?: number; // 0 to 1
   isStable?: boolean;
   warnings?: string[];
-}
-
-export interface SessionResult {
-  pallets: PalletLoad[];
-  simulations: Simulation[];
-  totalBoxes: number;
-  totalWeight: number;
-  overallUtilization: number;
 }
 
 export type ShippingMethod = 'pallet' | 'courier';
