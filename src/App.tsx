@@ -12,6 +12,7 @@ import {
   ArrowUpRight,
   Truck, 
   Download, 
+  Mail,
   RefreshCw, 
   Maximize2, 
   Weight, 
@@ -35,8 +36,9 @@ import gsap from 'gsap';
 import { Part, Container, Pallet, PackingResult, Simulation, SessionResult, PackedBox, PalletLoad } from './types';
 import { SimulationItem } from './components/SimulationItem';
 import { GeneralSummary } from './components/GeneralSummary';
-import { optimizePacking, packSessionSimulations } from './utils/packing';
+import { optimizePacking, packSessionSimulations, suggestBestBox } from './utils/packing';
 import { exportToExcel } from './utils/export';
+import { sendEmailReport } from './utils/email';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { GoogleGenAI } from '@google/genai';
@@ -47,15 +49,15 @@ function cn(...inputs: ClassValue[]) {
 }
 
 const STANDARD_PALLETS: Pallet[] = [
-  { id: 'euro', name: 'Euro Pallet (EPAL)', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 25 },
-  { id: 'half', name: 'Half Pallet', length: 800, width: 600, height: 150, maxWeight: 500, maxHeight: 2000, emptyWeight: 10 },
-  { id: 'ind', name: 'Industrial Pallet', length: 1200, width: 1000, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 30 },
-  { id: 'custom', name: 'Custom Pallet', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 25 },
+  { id: 'euro', name: 'Euro Pallet (EPAL)', description: 'Standard European pallet', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 25 },
+  { id: 'half', name: 'Half Pallet', description: 'Smaller pallet for retail', length: 800, width: 600, height: 150, maxWeight: 500, maxHeight: 2000, emptyWeight: 10 },
+  { id: 'ind', name: 'Industrial Pallet', description: 'Heavy duty industrial pallet', length: 1200, width: 1000, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 30 },
+  { id: 'custom', name: 'Custom Pallet', description: 'User-defined dimensions', length: 1200, width: 800, height: 150, maxWeight: 1500, maxHeight: 2000, emptyWeight: 25 },
 ];
 
 const INITIAL_PARTS: Part[] = [
-  { id: 'p1', name: 'Engine Component A', length: 120, width: 80, height: 60, weight: 1.2, orderQuantity: 1000 },
-  { id: 'p2', name: 'Brake Pad Set', length: 200, width: 150, height: 50, weight: 2.5, orderQuantity: 500 },
+  { id: 'p1', name: 'Engine Component A', description: 'High-precision engine part', length: 120, width: 80, height: 60, weight: 1.2, orderQuantity: 1000 },
+  { id: 'p2', name: 'Brake Pad Set', description: 'Standard automotive brake pads', length: 200, width: 150, height: 50, weight: 2.5, orderQuantity: 500 },
 ];
 
 const INITIAL_BOXS: Container[] = [
@@ -83,14 +85,12 @@ interface MeshBoxProps {
   color: string;
   edgeColor: string;
   opacity?: number;
-  label?: string;
   onClick?: () => void;
   isSelected?: boolean;
   isStable?: boolean;
 }
 
-const MeshBox = ({ position, args, color, edgeColor, opacity = 1, label, onClick, isSelected, isStable = true }: MeshBoxProps) => {
-  const fontSize = Math.min(args[1] * 0.5, 0.4); // Scale font size based on height, max 0.4
+const MeshBox = ({ position, args, color, edgeColor, opacity = 1, onClick, isSelected, isStable = true }: MeshBoxProps) => {
   
   const finalColor = !isStable ? "#ef4444" : (isSelected ? "#fbbf24" : color);
   const finalEdgeColor = !isStable ? "#b91c1c" : (isSelected ? "#f59e0b" : edgeColor);
@@ -115,65 +115,6 @@ const MeshBox = ({ position, args, color, edgeColor, opacity = 1, label, onClick
         />
         <Edges color={finalEdgeColor} threshold={15} />
       </mesh>
-      {label && (
-        <group>
-          {/* Top */}
-          <Text
-            position={[0, args[1] / 2 + 0.001, 0]}
-            rotation={[-Math.PI / 2, 0, 0]}
-            fontSize={fontSize}
-            color="black"
-            anchorX="center"
-            anchorY="middle"
-          >
-            {label}
-          </Text>
-          {/* Front (+Z) */}
-          <Text
-            position={[0, 0, args[2] / 2 + 0.001]}
-            rotation={[0, 0, 0]}
-            fontSize={fontSize}
-            color="black"
-            anchorX="center"
-            anchorY="middle"
-          >
-            {label}
-          </Text>
-          {/* Back (-Z) */}
-          <Text
-            position={[0, 0, -args[2] / 2 - 0.001]}
-            rotation={[0, Math.PI, 0]}
-            fontSize={fontSize}
-            color="black"
-            anchorX="center"
-            anchorY="middle"
-          >
-            {label}
-          </Text>
-          {/* Right (+X) */}
-          <Text
-            position={[args[0] / 2 + 0.001, 0, 0]}
-            rotation={[0, Math.PI / 2, 0]}
-            fontSize={fontSize}
-            color="black"
-            anchorX="center"
-            anchorY="middle"
-          >
-            {label}
-          </Text>
-          {/* Left (-X) */}
-          <Text
-            position={[-args[0] / 2 - 0.001, 0, 0]}
-            rotation={[0, -Math.PI / 2, 0]}
-            fontSize={fontSize}
-            color="black"
-            anchorX="center"
-            anchorY="middle"
-          >
-            {label}
-          </Text>
-        </group>
-      )}
     </group>
   );
 };
@@ -350,7 +291,8 @@ const PackingCanvas = React.memo(({
   sessionResult,
   selectedPalletIndex,
   selectedSimulationId,
-  onCapture
+  onCapture,
+  isLastBox
 }: { 
   viewMode: 'pallet' | 'box', 
   part: Part, 
@@ -360,7 +302,8 @@ const PackingCanvas = React.memo(({
   sessionResult?: SessionResult,
   selectedPalletIndex: number | null,
   selectedSimulationId: string | null,
-  onCapture?: (img: string) => void
+  onCapture?: (img: string) => void,
+  isLastBox?: boolean
 }) => {
   const scale = 0.01;
   const [selectedId, setSelectedId] = useState<string | number | null>(null);
@@ -382,7 +325,7 @@ const PackingCanvas = React.memo(({
       <Canvas 
         shadows 
         dpr={[1, 2]} 
-        camera={{ position: [10, 10, 10], fov: 30 }} 
+        camera={{ position: [18, 15, 18], fov: 30 }} 
         style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' }}
         gl={{ preserveDrawingBuffer: true }}
       >
@@ -426,7 +369,6 @@ const PackingCanvas = React.memo(({
                                 args={[c.length * scale - 0.0005, c.height * scale - 0.0005, c.width * scale - 0.0005]}
                                 color={c.color}
                                 edgeColor={c.edgeColor}
-                                label={c.partName.substring(0, 8)}
                                 onClick={() => setSelectedId(`p${palletIdx}-c${i}`)}
                                 isSelected={selectedId === `p${palletIdx}-c${i}`}
                                 isStable={c.isStable}
@@ -451,36 +393,21 @@ const PackingCanvas = React.memo(({
                       
                       const isLast = palletIdx === result.totalPalletsNeeded - 1;
                       const countOnThisPallet = isLast ? result.lastPalletBoxes : result.boxesPerPalletBalanced;
-                      
-                      const [l, w, h] = result.orientations.pallet.split('x').map(Number);
-                      const cw = l * scale;
-                      const cd = w * scale;
-                      const ch = h * scale;
-                      const nx = result.palletGrid.nx;
-                      const ny = result.palletGrid.ny;
-
-                      // Calculate actual footprint for centering
-                      const actualNx = Math.min(nx, countOnThisPallet);
-                      const actualNy = Math.min(ny, Math.ceil(countOnThisPallet / nx));
+                      const boxesToRender = result.boxes?.slice(0, countOnThisPallet) || [];
 
                       return (
                         <group key={palletIdx} position={[offsetX, 0, offsetZ]}>
                           <PalletMesh pallet={pallet} />
-                          <group position={[-(actualNx * cw) / 2, 0, -(actualNy * cd) / 2]}>
-                            {Array.from({ length: countOnThisPallet }).map((_, i) => {
-                              const ix = i % nx;
-                              const iy = Math.floor(i / nx) % ny;
-                              const iz = Math.floor(i / (nx * ny));
+                          <group position={[-pallet.length * scale / 2, 0, -pallet.width * scale / 2]}>
+                            {boxesToRender.map((c, i) => {
                               const globalId = `p${palletIdx}-c${i}`;
-                              
                               return (
                                 <MeshBox 
                                   key={i}
-                                  position={[ix * cw + cw/2, iz * ch + ch/2, iy * cd + cd/2]}
-                                  args={[cw - 0.0005, ch - 0.0005, cd - 0.0005]}
-                                  color="#fef3c7"
-                                  edgeColor="#d97706"
-                                  label={part.name.substring(0, 8)}
+                                  position={[c.x * scale + c.length * scale / 2, c.z * scale + c.height * scale / 2, c.y * scale + c.width * scale / 2]}
+                                  args={[c.length * scale - 0.0005, c.height * scale - 0.0005, c.width * scale - 0.0005]}
+                                  color={c.color || "#fef3c7"}
+                                  edgeColor={c.edgeColor || "#d97706"}
                                   onClick={() => setSelectedId(globalId)}
                                   isSelected={selectedId === globalId}
                                   isStable={result.isStable}
@@ -505,36 +432,133 @@ const PackingCanvas = React.memo(({
 
                 {/* Parts */}
                 {(() => {
-                  const [l, w, h] = currentResult.orientations.box.split('x').map(Number);
-                  const pw = l * scale;
-                  const pd = w * scale;
-                  const ph = h * scale;
-                  const nx = currentResult.boxGrid.nx;
-                  const ny = currentResult.boxGrid.ny;
+                  const layout = currentResult.layout;
+                  const partsToRender = isLastBox ? currentResult.partsInLastBox : Math.min(currentResult.partsPerBox, currentPart.orderQuantity);
+                  const s = scale;
 
-                  const partsToRender = Math.min(currentResult.partsPerBox, currentPart.orderQuantity);
+                  if (layout && layout.type !== 'grid') {
+                    const { nx1, ny1, nx2, ny2, l, w, h, x, y, type } = layout;
+                    const pw = l * s;
+                    const pd = w * s;
+                    const ph = h * s;
+                    const pw2 = w * s;
+                    const pd2 = l * s;
+                    
+                    let maxL = 0;
+                    let maxW = 0;
+                    if (type === 'two-block-v') {
+                      maxL = Math.max(nx1 * l, (x || 0) + nx2 * w);
+                      maxW = Math.max(ny1 * w, ny2 * l);
+                    } else if (type === 'two-block-h') {
+                      maxL = Math.max(nx1 * l, nx2 * w);
+                      maxW = Math.max(ny1 * w, (y || 0) + ny2 * l);
+                    }
+                    
+                    const boxes = [];
+                    let count = 0;
+                    
+                    const nz = currentResult.boxGrid.nz;
+                    
+                    for (let z = 0; z < nz; z++) {
+                      // Block 1
+                      for (let iy = 0; iy < ny1; iy++) {
+                        for (let ix = 0; ix < nx1; ix++) {
+                          if (count >= partsToRender) break;
+                          const currentCount = count;
+                          boxes.push(
+                            <MeshBox 
+                              key={`z${z}-b1-${ix}-${iy}`}
+                              position={[ix * pw + pw/2, z * ph + ph/2, iy * pd + pd/2]}
+                              args={[pw - 0.005, ph - 0.005, pd - 0.005]}
+                              color="#93c5fd"
+                              edgeColor="#3b82f6"
+                              onClick={() => setSelectedId(currentCount)}
+                              isSelected={selectedId === currentCount}
+                            />
+                          );
+                          count++;
+                        }
+                      }
+                      
+                      // Block 2
+                      if (type === 'two-block-v') {
+                        const startX = x! * s;
+                        for (let iy = 0; iy < ny2; iy++) {
+                          for (let ix = 0; ix < nx2; ix++) {
+                            if (count >= partsToRender) break;
+                            const currentCount = count;
+                            boxes.push(
+                              <MeshBox 
+                                key={`z${z}-b2-${ix}-${iy}`}
+                                position={[startX + ix * pw2 + pw2/2, z * ph + ph/2, iy * pd2 + pd2/2]}
+                                args={[pw2 - 0.005, ph - 0.005, pd2 - 0.005]}
+                                color="#93c5fd"
+                                edgeColor="#3b82f6"
+                                onClick={() => setSelectedId(currentCount)}
+                                isSelected={selectedId === currentCount}
+                              />
+                            );
+                            count++;
+                          }
+                        }
+                      } else if (type === 'two-block-h') {
+                        const startY = y! * s;
+                        for (let iy = 0; iy < ny2; iy++) {
+                          for (let ix = 0; ix < nx2; ix++) {
+                            if (count >= partsToRender) break;
+                            const currentCount = count;
+                            boxes.push(
+                              <MeshBox 
+                                key={`z${z}-b2-${ix}-${iy}`}
+                                position={[ix * pw2 + pw2/2, z * ph + ph/2, startY + iy * pd2 + pd2/2]}
+                                args={[pw2 - 0.005, ph - 0.005, pd2 - 0.005]}
+                                color="#93c5fd"
+                                edgeColor="#3b82f6"
+                                onClick={() => setSelectedId(currentCount)}
+                                isSelected={selectedId === currentCount}
+                              />
+                            );
+                            count++;
+                          }
+                        }
+                      }
+                    }
+                    
+                    return (
+                      <group position={[-maxL * s / 2, 0, -maxW * s / 2]}>
+                        {boxes}
+                      </group>
+                    );
+                  } else {
+                    const [l, w, h] = currentResult.orientations.box.split('x').map(Number);
+                    const pw = l * s;
+                    const pd = w * s;
+                    const ph = h * s;
+                    const nx = currentResult.boxGrid.nx;
+                    const ny = currentResult.boxGrid.ny;
 
-                  return (
-                    <group position={[-(nx * pw) / 2, 0, -(ny * pd) / 2]}>
-                      {Array.from({ length: partsToRender }).map((_, i) => {
-                        const ix = i % nx;
-                        const iy = Math.floor(i / nx) % ny;
-                        const iz = Math.floor(i / (nx * ny));
-                        
-                        return (
-                          <MeshBox 
-                            key={i}
-                            position={[ix * pw + pw/2, iz * ph + ph/2, iy * pd + pd/2]}
-                            args={[pw - 0.005, ph - 0.005, pd - 0.005]}
-                            color="#93c5fd"
-                            edgeColor="#3b82f6"
-                            onClick={() => setSelectedId(i)}
-                            isSelected={selectedId === i}
-                          />
-                        );
-                      })}
-                    </group>
-                  );
+                    return (
+                      <group position={[-(nx * pw) / 2, 0, -(ny * pd) / 2]}>
+                        {Array.from({ length: partsToRender }).map((_, i) => {
+                          const ix = i % nx;
+                          const iy = Math.floor(i / nx) % ny;
+                          const iz = Math.floor(i / (nx * ny));
+                          
+                          return (
+                            <MeshBox 
+                              key={i}
+                              position={[ix * pw + pw/2, iz * ph + ph/2, iy * pd + pd/2]}
+                              args={[pw - 0.005, ph - 0.005, pd - 0.005]}
+                              color="#93c5fd"
+                              edgeColor="#3b82f6"
+                              onClick={() => setSelectedId(i)}
+                              isSelected={selectedId === i}
+                            />
+                          );
+                        })}
+                      </group>
+                    );
+                  }
                 })()}
               </group>
             )}
@@ -625,6 +649,7 @@ export default function App() {
   const [selectedSimulationId, setSelectedSimulationId] = useState<string | null>(null);
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [projectNumber, setProjectNumber] = useState('');
+  const [deliveryAddress, setDeliveryAddress] = useState('');
 
   const [simulations, setSimulations] = useState<Simulation[]>([]);
   const [sessionResult, setSessionResult] = useState<SessionResult | null>(null);
@@ -633,6 +658,20 @@ export default function App() {
   const box = useMemo(() => boxes.find(c => c.id === selectedBoxId) || boxes[0], [boxes, selectedBoxId]);
 
   const result = useMemo(() => optimizePacking(part, box, pallet, part.orderQuantity), [part, box, pallet, part.orderQuantity]);
+
+  const handlePartChange = (updates: Partial<Part>) => {
+    const newParts = parts.map(p => p.id === selectedPartId ? { ...p, ...updates } : p);
+    setParts(newParts);
+    
+    // Auto-suggest box when dimensions or quantity change
+    if (updates.length !== undefined || updates.width !== undefined || updates.height !== undefined || updates.orderQuantity !== undefined) {
+      const updatedPart = newParts.find(p => p.id === selectedPartId)!;
+      const suggestedBox = suggestBestBox(updatedPart, pallet);
+      
+      // Update the currently selected box with the suggested dimensions
+      setBoxes(prev => prev.map(b => b.id === selectedBoxId ? { ...b, ...suggestedBox, id: b.id } : b));
+    }
+  };
 
   const addSimulationToSession = () => {
     const newSim: Simulation = {
@@ -687,20 +726,10 @@ export default function App() {
     removeSimulation(sim.id);
   };
 
-  const handleExport = async () => {
+  const handleExport = async (type: 'excel' | 'email') => {
     setIsOptimizing(true);
     try {
-      // We'll use a temporary hidden container to render both views and capture them
-      // For now, let's just capture the current view if possible, 
-      // but the user wants BOTH. So we'll trigger a multi-step capture.
-      
-      // I'll implement a more robust way: 
-      // 1. Create a hidden canvas for each view
-      // 2. Capture them
-      // 3. Export
-      
-      // Since I can't easily "render to string" or "render to buffer" without a visible canvas in some browsers,
-      // I'll use a state-based approach where we briefly show a "Generating Report" overlay.
+      setExportType(type);
       setExportStep('pallet');
     } catch (error) {
       console.error('Export failed:', error);
@@ -709,13 +738,15 @@ export default function App() {
     }
   };
 
-  const [exportStep, setExportStep] = useState<'idle' | 'pallet' | 'box' | 'final'>('idle');
+  const [exportStep, setExportStep] = useState<'idle' | 'pallet' | 'lastPallet' | 'box' | 'lastBox' | 'final'>('idle');
+  const [exportType, setExportType] = useState<'excel' | 'email' | null>(null);
   const [palletImage, setPalletImage] = useState<string | undefined>();
+  const [lastPalletImage, setLastPalletImage] = useState<string | undefined>();
   const [boxImage, setBoxImage] = useState<string | undefined>();
+  const [lastBoxImage, setLastBoxImage] = useState<string | undefined>();
   const [aiInsights, setAiInsights] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSuggestingAI, setIsSuggestingAI] = useState(false);
-  const [aiSuggestionModal, setAiSuggestionModal] = useState<AISuggestion | null>(null);
 
   const handleAISuggestion = async () => {
     setIsSuggestingAI(true);
@@ -734,7 +765,7 @@ export default function App() {
       
       setBoxes([...boxes, newBox]);
       setSelectedBoxId(newBox.id);
-      setAiSuggestionModal(suggestion);
+      alert('Optymalizacja wykonana');
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Failed to get AI suggestion');
     } finally {
@@ -797,12 +828,19 @@ export default function App() {
 
   useEffect(() => {
     if (exportStep === 'final' && palletImage && boxImage) {
-      exportToExcel(part, box, pallet, result, part.orderQuantity, palletImage, boxImage, simulations, sessionResult, shippingMethod, projectNumber);
+      if (exportType === 'excel') {
+        exportToExcel(part, box, pallet, result, part.orderQuantity, palletImage, boxImage, simulations, sessionResult, shippingMethod, projectNumber, lastBoxImage, lastPalletImage);
+      } else if (exportType === 'email') {
+        sendEmailReport(part, box, pallet, result, shippingMethod, projectNumber, simulations, sessionResult, deliveryAddress, palletImage, boxImage, lastBoxImage, lastPalletImage);
+      }
       setExportStep('idle');
+      setExportType(null);
       setPalletImage(undefined);
+      setLastPalletImage(undefined);
       setBoxImage(undefined);
+      setLastBoxImage(undefined);
     }
-  }, [exportStep, palletImage, boxImage, part, box, pallet, result, simulations, sessionResult, shippingMethod, projectNumber]);
+  }, [exportStep, exportType, palletImage, lastPalletImage, boxImage, lastBoxImage, part, box, pallet, result, simulations, sessionResult, shippingMethod, projectNumber, deliveryAddress]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -840,6 +878,7 @@ export default function App() {
     const newPart: Part = {
       id: Math.random().toString(36).substr(2, 9),
       name: 'New Part',
+      description: 'Part description...',
       length: 100,
       width: 100,
       height: 100,
@@ -881,79 +920,45 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       {/* Header */}
-      <header className="h-16 bg-zinc-950 text-white flex items-center px-6 sticky top-0 z-50 border-b border-zinc-800 shadow-sm">
-        <div className="flex items-center gap-3">
-          <svg width="36" height="36" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M 12 12 Q 55 10 95 42 Q 75 80 28 92 Q 10 55 12 12 Z" fill="white" />
-            <path d="M 48 46 Q 35 25 12 12" stroke="black" strokeWidth="5" fill="none" strokeLinecap="round" />
-            <path d="M 48 46 Q 70 35 95 42" stroke="black" strokeWidth="5" fill="none" strokeLinecap="round" />
-            <path d="M 48 46 Q 35 70 28 92" stroke="black" strokeWidth="5" fill="none" strokeLinecap="round" />
-          </svg>
-          <h1 className="font-light text-2xl tracking-[0.2em] mt-1 bg-gradient-to-r from-white to-zinc-400 bg-clip-text text-transparent">DIAM</h1>
-        </div>
-
-        <div className="ml-12 flex items-center gap-6">
-          <div className="hidden md:flex items-center gap-2">
-            <label className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Project No.</label>
-            <input
-              type="text"
-              value={projectNumber}
-              onChange={(e) => setProjectNumber(e.target.value)}
-              placeholder="e.g. PRJ-123"
-              className="bg-zinc-900 border border-zinc-800 rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500 w-32 transition-all"
-            />
+      <header className="h-20 bg-white text-zinc-900 flex items-center px-8 sticky top-0 z-50 border-b border-zinc-200 shadow-sm backdrop-blur-md bg-white/90">
+        <div className="flex items-center gap-4">
+          <div className="relative">
+            <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-emerald-600 rounded-xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
+            <svg width="42" height="42" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="relative">
+              <path d="M 12 12 Q 55 10 95 42 Q 75 80 28 92 Q 10 55 12 12 Z" fill="#18181b" />
+              <path d="M 48 46 Q 35 25 12 12" stroke="white" strokeWidth="5" fill="none" strokeLinecap="round" />
+              <path d="M 48 46 Q 70 35 95 42" stroke="white" strokeWidth="5" fill="none" strokeLinecap="round" />
+              <path d="M 48 46 Q 35 70 28 92" stroke="white" strokeWidth="5" fill="none" strokeLinecap="round" />
+            </svg>
           </div>
-
-          <div className="hidden md:flex bg-zinc-900 p-1 rounded-xl border border-zinc-800 shadow-inner">
-            <button 
-              onClick={() => {
-                setShippingMethod('pallet');
-                setCalculationMode('full');
-                setViewMode('pallet');
-              }}
-            className={cn(
-              "px-5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-2 transition-all duration-300",
-              shippingMethod === 'pallet' 
-                ? "bg-emerald-600 text-white shadow-[0_0_15px_rgba(16,185,129,0.4)] scale-105" 
-                : "text-zinc-500 hover:text-zinc-300"
-            )}
-          >
-            <Layers size={14} />
-            Pallet Shipping
-          </button>
-          <button 
-            onClick={() => {
-              setShippingMethod('courier');
-              setCalculationMode('boxes-only');
-              setViewMode('box');
-            }}
-            className={cn(
-              "px-5 py-2 rounded-lg text-[10px] font-bold uppercase tracking-wider flex items-center gap-2 transition-all duration-300",
-              shippingMethod === 'courier' 
-                ? "bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.4)] scale-105" 
-                : "text-zinc-500 hover:text-zinc-300"
-            )}
-          >
-            <Truck size={14} />
-            Courier Shipping
-          </button>
-        </div>
+          <div>
+            <h1 className="font-black text-2xl tracking-[0.2em] text-zinc-900 leading-none">DIAM</h1>
+            <p className="text-[10px] font-bold text-zinc-400 tracking-widest uppercase mt-1">Palletizer Pro</p>
+          </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-4">
+        <div className="ml-auto flex items-center gap-3">
           <button 
             onClick={handleReset}
-            className="text-zinc-400 hover:text-white transition-colors flex items-center gap-1 text-sm font-medium"
+            className="text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 px-4 py-2 rounded-xl transition-all flex items-center gap-2 text-sm font-bold"
           >
-            <RefreshCw size={14} />
+            <RefreshCw size={16} className="text-zinc-400" />
             Reset
           </button>
+          <div className="h-8 w-[1px] bg-zinc-200 mx-2"></div>
           <button 
-            onClick={handleExport}
-            className="bg-white hover:bg-zinc-200 text-black px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-all shadow-sm active:scale-95"
+            onClick={() => handleExport('excel')}
+            className="bg-white hover:bg-zinc-50 text-zinc-900 border-2 border-zinc-900 px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-sm active:scale-95"
           >
-            <Download size={16} />
-            Export Report
+            <Download size={18} />
+            Excel Report
+          </button>
+          <button 
+            onClick={() => handleExport('email')}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-lg shadow-blue-200 active:scale-95"
+          >
+            <Mail size={18} />
+            Send Email
           </button>
         </div>
       </header>
@@ -961,8 +966,97 @@ export default function App() {
       <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 max-w-[1600px] mx-auto w-full">
         {/* Left Column: Inputs */}
         <div className="lg:col-span-4 space-y-6">
+          {/* Project & Shipping Settings */}
+          <section className="glass-panel p-6 bg-white border-zinc-200 shadow-xl shadow-zinc-200/50 rounded-3xl">
+            <div className="flex flex-col gap-6">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-zinc-200">
+                    <Archive size={20} />
+                  </div>
+                  <div>
+                    <h2 className="font-bold text-zinc-900">Project Settings</h2>
+                    <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-tight">Identification & Method</p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-black uppercase tracking-widest text-zinc-400 ml-1">Project Number</label>
+                  <div className="relative group">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-400 group-focus-within:text-zinc-900 transition-colors">
+                      <Info size={16} />
+                    </div>
+                    <input
+                      type="text"
+                      value={projectNumber}
+                      onChange={(e) => setProjectNumber(e.target.value)}
+                      placeholder="e.g. PRJ-123"
+                      className="w-full pl-10 pr-4 py-3 bg-zinc-50 border-2 border-zinc-100 rounded-2xl text-sm font-bold focus:bg-white focus:border-zinc-900 focus:ring-0 transition-all outline-none shadow-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-black uppercase tracking-widest text-zinc-400 ml-1">Delivery Address</label>
+                  <div className="relative group">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-400 group-focus-within:text-zinc-900 transition-colors">
+                      <Truck size={16} />
+                    </div>
+                    <input
+                      type="text"
+                      value={deliveryAddress}
+                      onChange={(e) => setDeliveryAddress(e.target.value)}
+                      placeholder="e.g. 123 Logistics Way, City"
+                      className="w-full pl-10 pr-4 py-3 bg-zinc-50 border-2 border-zinc-100 rounded-2xl text-sm font-bold focus:bg-white focus:border-zinc-900 focus:ring-0 transition-all outline-none shadow-sm"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-[11px] font-black uppercase tracking-widest text-zinc-400 ml-1">Shipping Method</label>
+                  <div className="grid grid-cols-2 gap-3 p-1.5 bg-zinc-100 rounded-2xl border border-zinc-200">
+                    <button 
+                      onClick={() => {
+                        setShippingMethod('pallet');
+                        setCalculationMode('full');
+                        setViewMode('pallet');
+                      }}
+                      className={cn(
+                        "flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-black transition-all",
+                        shippingMethod === 'pallet' 
+                          ? "bg-white text-emerald-600 shadow-md scale-[1.02] border border-emerald-100" 
+                          : "text-zinc-500 hover:text-zinc-700 hover:bg-zinc-200/50"
+                      )}
+                    >
+                      <Layers size={16} />
+                      PALLET
+                    </button>
+                    <button 
+                      onClick={() => {
+                        setShippingMethod('courier');
+                        setCalculationMode('boxes-only');
+                        setViewMode('box');
+                      }}
+                      className={cn(
+                        "flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-black transition-all",
+                        shippingMethod === 'courier' 
+                          ? "bg-white text-blue-600 shadow-md scale-[1.02] border border-blue-100" 
+                          : "text-zinc-500 hover:text-zinc-700 hover:bg-zinc-200/50"
+                      )}
+                    >
+                      <Truck size={16} />
+                      COURIER
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
           {/* Part Library */}
-          <section className="glass-panel p-5">
+          <section className="glass-panel p-5 bg-blue-50/30 border-blue-100">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <div className="p-1.5 bg-blue-50 text-blue-600 rounded-md">
@@ -998,7 +1092,12 @@ export default function App() {
                     )}>
                       {selectedPartId === p.id && <Check size={10} className="text-white" />}
                     </div>
-                    <span className="text-sm font-medium text-zinc-700">{p.name}</span>
+                    <div className="flex flex-col">
+                      <span className="text-sm font-medium text-zinc-700">{p.name}</span>
+                      {p.description && (
+                        <span className="text-[10px] text-zinc-400 line-clamp-1">{p.description}</span>
+                      )}
+                    </div>
                   </div>
                   <button 
                     onClick={(e) => { e.stopPropagation(); deletePart(p.id); }}
@@ -1011,27 +1110,34 @@ export default function App() {
             </div>
 
             <div className="space-y-4 pt-4 border-t border-zinc-100">
-              <div>
-                <label className="label-text">Part Name</label>
-                <input 
-                  type="text" 
-                  value={part.name} 
-                  onChange={e => {
-                    const newParts = parts.map(p => p.id === selectedPartId ? {...p, name: e.target.value} : p);
-                    setParts(newParts);
-                  }}
-                  className="input-field"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="label-text">Part Name</label>
+                  <input 
+                    type="text" 
+                    value={part.name} 
+                    onChange={e => handlePartChange({ name: e.target.value })}
+                    className="input-field"
+                    placeholder="e.g. Engine Component"
+                  />
+                </div>
+                <div>
+                  <label className="label-text">Description</label>
+                  <input 
+                    type="text" 
+                    value={part.description || ''} 
+                    onChange={e => handlePartChange({ description: e.target.value })}
+                    className="input-field"
+                    placeholder="Enter part description..."
+                  />
+                </div>
               </div>
               <div className="grid grid-cols-3 gap-3">
                 <div>
                   <label className="label-text">Length (mm)</label>
                   <NumberInput 
                     value={part.length} 
-                    onChange={e => {
-                      const newParts = parts.map(p => p.id === selectedPartId ? {...p, length: Number(e.target.value)} : p);
-                      setParts(newParts);
-                    }}
+                    onChange={e => handlePartChange({ length: Number(e.target.value) })}
                     className="input-field"
                     min={0.1}
                     max={10000}
@@ -1041,10 +1147,7 @@ export default function App() {
                   <label className="label-text">Width (mm)</label>
                   <NumberInput 
                     value={part.width} 
-                    onChange={e => {
-                      const newParts = parts.map(p => p.id === selectedPartId ? {...p, width: Number(e.target.value)} : p);
-                      setParts(newParts);
-                    }}
+                    onChange={e => handlePartChange({ width: Number(e.target.value) })}
                     className="input-field"
                     min={0.1}
                     max={10000}
@@ -1054,26 +1157,20 @@ export default function App() {
                   <label className="label-text">Height (mm)</label>
                   <NumberInput 
                     value={part.height} 
-                    onChange={e => {
-                      const newParts = parts.map(p => p.id === selectedPartId ? {...p, height: Number(e.target.value)} : p);
-                      setParts(newParts);
-                    }}
+                    onChange={e => handlePartChange({ height: Number(e.target.value) })}
                     className="input-field"
                     min={0.1}
                     max={10000}
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="label-text">Unit Weight (kg)</label>
                   <div className="relative">
                     <NumberInput 
                       value={part.weight} 
-                      onChange={e => {
-                        const newParts = parts.map(p => p.id === selectedPartId ? {...p, weight: Number(e.target.value)} : p);
-                        setParts(newParts);
-                      }}
+                      onChange={e => handlePartChange({ weight: Number(e.target.value) })}
                       className="input-field pr-10"
                       min={0.01}
                       max={10000}
@@ -1087,23 +1184,41 @@ export default function App() {
                   <label className="label-text">Total Order Qty</label>
                   <NumberInput 
                     value={part.orderQuantity} 
-                    onChange={e => {
-                      const newParts = parts.map(p => p.id === selectedPartId ? {...p, orderQuantity: Number(e.target.value)} : p);
-                      setParts(newParts);
-                    }}
+                    onChange={e => handlePartChange({ orderQuantity: Number(e.target.value) })}
                     className="input-field"
                     min={1}
                     max={1000000}
                   />
                 </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="label-text">Max Qty in Box (Optional)</label>
+                  <label className="label-text">Number of Boxes (Optional)</label>
                   <NumberInput 
-                    value={part.maxPartsPerBox || 0} 
+                    value={part.targetBoxCount || 0} 
                     onChange={e => {
                       const val = Number(e.target.value);
-                      const newParts = parts.map(p => p.id === selectedPartId ? {...p, maxPartsPerBox: val > 0 ? val : undefined} : p);
-                      setParts(newParts);
+                      handlePartChange({ 
+                        targetBoxCount: val > 0 ? val : undefined,
+                        fixedPartsPerBox: undefined // Clear the other one
+                      });
+                    }}
+                    className="input-field"
+                    min={0}
+                    max={1000000}
+                    placeholder="Auto"
+                  />
+                </div>
+                <div>
+                  <label className="label-text">Parts per Box (Optional)</label>
+                  <NumberInput 
+                    value={part.fixedPartsPerBox || 0} 
+                    onChange={e => {
+                      const val = Number(e.target.value);
+                      handlePartChange({ 
+                        fixedPartsPerBox: val > 0 ? val : undefined,
+                        targetBoxCount: undefined // Clear the other one
+                      });
                     }}
                     className="input-field"
                     min={0}
@@ -1116,7 +1231,7 @@ export default function App() {
           </section>
 
           {/* Box Library */}
-          <section className="glass-panel p-5">
+          <section className="glass-panel p-5 bg-amber-50/30 border-amber-100">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
                 <div className="p-1.5 bg-orange-50 text-orange-600 rounded-md">
@@ -1128,7 +1243,7 @@ export default function App() {
                 <button 
                   onClick={handleAISuggestion}
                   disabled={isSuggestingAI}
-                  className="px-3 py-1.5 bg-purple-100 hover:bg-purple-200 text-purple-700 text-xs font-medium rounded-lg transition-colors flex items-center gap-1 disabled:opacity-50"
+                  className="px-3 py-1.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-medium rounded-lg transition-all shadow-sm flex items-center gap-1.5 disabled:opacity-70"
                   title="Use AI to suggest the optimal box dimensions"
                 >
                   {isSuggestingAI ? (
@@ -1287,7 +1402,7 @@ export default function App() {
 
           {/* Pallet Configuration - Only show if not in courier mode */}
           {shippingMethod === 'pallet' && (
-            <section className="glass-panel p-5">
+            <section className="glass-panel p-5 bg-emerald-50/30 border-emerald-100">
               <div className="flex items-center gap-2 mb-4">
                 <div className="p-1.5 bg-purple-50 text-purple-600 rounded-md">
                   <Palette size={18} />
@@ -1295,14 +1410,27 @@ export default function App() {
                 <h2 className="font-semibold text-zinc-900">Pallet Setup</h2>
               </div>
               <div className="space-y-4">
-                <div>
-                  <label className="label-text">Pallet Name</label>
-                  <input 
-                    type="text" 
-                    value={pallet.name} 
-                    onChange={e => setPallet({...pallet, name: e.target.value})}
-                    className="input-field"
-                  />
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="label-text">Pallet Name</label>
+                    <input 
+                      type="text" 
+                      value={pallet.name} 
+                      onChange={e => setPallet({...pallet, name: e.target.value})}
+                      className="input-field"
+                      placeholder="e.g. Euro Pallet"
+                    />
+                  </div>
+                  <div>
+                    <label className="label-text">Description</label>
+                    <input 
+                      type="text" 
+                      value={pallet.description || ''} 
+                      onChange={e => setPallet({...pallet, description: e.target.value})}
+                      className="input-field"
+                      placeholder="Enter pallet description..."
+                    />
+                  </div>
                 </div>
                 <div>
                   <label className="label-text">Standard Type</label>
@@ -1319,7 +1447,10 @@ export default function App() {
                         )}
                       >
                         <div className="font-medium">{p.name}</div>
-                        <div className="text-xs opacity-70">{p.length} x {p.width} mm</div>
+                        <div className="flex items-center justify-between">
+                          <div className="text-xs opacity-70">{p.length} x {p.width} mm</div>
+                          {p.description && <div className="text-[10px] opacity-60 italic">{p.description}</div>}
+                        </div>
                       </button>
                     ))}
                   </div>
@@ -1397,7 +1528,7 @@ export default function App() {
           )}
 
           {/* Shipment Planning */}
-          <section className="glass-panel p-5">
+          <section className="glass-panel p-5 bg-purple-50/30 border-purple-100">
             <div className="flex items-center gap-2 mb-4">
               <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-md">
                 <Truck size={18} />
@@ -1444,7 +1575,7 @@ export default function App() {
 
           {/* Active Session */}
           {simulations.length > 0 && (
-            <section className="glass-panel p-5">
+            <section className="glass-panel p-5 bg-indigo-50/30 border-indigo-100">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
                   <div className="p-1.5 bg-blue-50 text-blue-600 rounded-md">
@@ -1610,10 +1741,34 @@ export default function App() {
                           box={box}
                           pallet={pallet}
                           result={result}
-                          selectedPalletIndex={null}
+                          selectedPalletIndex={0}
                           selectedSimulationId={null}
                           onCapture={(img) => {
                             setPalletImage(img);
+                            const hasDifferentLastPallet = sessionResult 
+                              ? (sessionResult.pallets.length > 1 && sessionResult.pallets[0].boxes.length !== sessionResult.pallets[sessionResult.pallets.length - 1].boxes.length)
+                              : (result.totalPalletsNeeded > 1 && result.isLastPalletDifferent);
+                            if (hasDifferentLastPallet) {
+                              setExportStep('lastPallet');
+                            } else {
+                              setExportStep('box');
+                            }
+                          }}
+                        />
+                      </div>
+                    )}
+                    {exportStep === 'lastPallet' && (
+                      <div className="w-[800px] h-[600px]">
+                        <PackingCanvas 
+                          viewMode="pallet"
+                          part={part}
+                          box={box}
+                          pallet={pallet}
+                          result={result}
+                          selectedPalletIndex={sessionResult ? sessionResult.pallets.length - 1 : result.totalPalletsNeeded - 1}
+                          selectedSimulationId={null}
+                          onCapture={(img) => {
+                            setLastPalletImage(img);
                             setExportStep('box');
                           }}
                         />
@@ -1631,6 +1786,28 @@ export default function App() {
                           selectedSimulationId={null}
                           onCapture={(img) => {
                             setBoxImage(img);
+                            if (result.isLastBoxDifferent) {
+                              setExportStep('lastBox');
+                            } else {
+                              setExportStep('final');
+                            }
+                          }}
+                        />
+                      </div>
+                    )}
+                    {exportStep === 'lastBox' && (
+                      <div className="w-[800px] h-[600px]">
+                        <PackingCanvas 
+                          viewMode="box"
+                          part={part}
+                          box={box}
+                          pallet={pallet}
+                          result={result}
+                          selectedPalletIndex={null}
+                          selectedSimulationId={null}
+                          isLastBox={true}
+                          onCapture={(img) => {
+                            setLastBoxImage(img);
                             setExportStep('final');
                           }}
                         />
@@ -1842,67 +2019,6 @@ export default function App() {
         <p>© 2026 DIAM Palletizer - Advanced Logistics Optimization Engine</p>
         <p className="mt-1 italic">All calculations are based on rectangular bounding boxes and standard metric units.</p>
       </footer>
-
-      {/* AI Suggestion Modal */}
-      <AnimatePresence>
-        {aiSuggestionModal && (
-          <motion.div 
-            key="ai-suggestion-modal"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4"
-            onClick={() => setAiSuggestionModal(null)}
-          >
-            <motion.div 
-              initial={{ scale: 0.95, opacity: 0, y: 20 }}
-              animate={{ scale: 1, opacity: 1, y: 0 }}
-              exit={{ scale: 0.95, opacity: 0, y: 20 }}
-              className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden"
-              onClick={e => e.stopPropagation()}
-            >
-              <div className="bg-gradient-to-r from-purple-600 to-indigo-600 p-6 text-white flex items-center gap-3">
-                <Sparkles size={24} className="text-purple-200" />
-                <div>
-                  <h2 className="text-xl font-bold">AI Box Suggestion</h2>
-                  <p className="text-purple-200 text-sm">Optimized for {shippingMethod === 'pallet' ? 'Pallet' : 'Courier'} Shipping</p>
-                </div>
-              </div>
-              
-              <div className="p-6 space-y-6">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
-                    <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Suggested Name</div>
-                    <div className="text-lg font-semibold text-zinc-900">{aiSuggestionModal.boxName}</div>
-                  </div>
-                  <div className="bg-zinc-50 p-4 rounded-xl border border-zinc-100">
-                    <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-1">Dimensions (mm)</div>
-                    <div className="text-lg font-semibold text-zinc-900">
-                      {aiSuggestionModal.length} <span className="text-zinc-400 text-sm">L</span> × {aiSuggestionModal.width} <span className="text-zinc-400 text-sm">W</span> × {aiSuggestionModal.height} <span className="text-zinc-400 text-sm">H</span>
-                    </div>
-                  </div>
-                </div>
-                
-                <div>
-                  <div className="text-xs font-bold text-zinc-500 uppercase tracking-wider mb-2">Explanation & Strategy</div>
-                  <div className="bg-purple-50 p-5 rounded-xl border border-purple-100 text-purple-900 text-sm leading-relaxed whitespace-pre-wrap">
-                    {aiSuggestionModal.explanation}
-                  </div>
-                </div>
-                
-                <div className="flex justify-end pt-4 border-t border-zinc-100">
-                  <button 
-                    onClick={() => setAiSuggestionModal(null)}
-                    className="px-6 py-2.5 bg-zinc-900 hover:bg-zinc-800 text-white font-medium rounded-xl transition-colors"
-                  >
-                    Apply & Close
-                  </button>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

@@ -13,8 +13,8 @@ function generateBoxVisualization(part: Part, box: Container, result: PackingRes
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
   const partsToDraw = isLastBox ? result.partsInLastBox : result.partsPerBox;
-  const [partL, partW, partH] = result.orientations.box.split('x').map(Number);
-  const { nx, ny, nz } = result.boxGrid;
+  const layout = result.layout;
+  const nz = result.boxGrid.nz;
 
   // We need to draw 'nz' layers.
   const cols = Math.ceil(Math.sqrt(nz));
@@ -43,6 +43,18 @@ function generateBoxVisualization(part: Part, box: Container, result: PackingRes
 
   let partsDrawn = 0;
 
+  const drawPart = (x: number, y: number, w: number, h: number, name: string) => {
+    if (partsDrawn >= partsToDraw) return;
+
+    ctx.fillStyle = '#dbeafe';
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = '#2563eb';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+
+    partsDrawn++;
+  };
+
   for (let z = 0; z < nz; z++) {
     const col = z % cols;
     const row = Math.floor(z / cols);
@@ -60,48 +72,39 @@ function generateBoxVisualization(part: Part, box: Container, result: PackingRes
     ctx.textAlign = 'center';
     ctx.fillText(`Warstwa ${z + 1}`, startX + (box.length * scale) / 2, startY - 10);
 
-    for (let y = 0; y < ny; y++) {
-      for (let x = 0; x < nx; x++) {
-        if (partsDrawn >= partsToDraw) break;
-
-        const partX = startX + x * partL * scale;
-        const partY = startY + y * partW * scale;
-
-        ctx.fillStyle = '#dbeafe';
-        ctx.fillRect(partX, partY, partL * scale, partW * scale);
-        ctx.strokeStyle = '#2563eb';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(partX, partY, partL * scale, partW * scale);
-
-        // Draw part name
-        ctx.fillStyle = '#1e3a8a';
-        
-        let fontSize = 14;
-        ctx.font = `${fontSize}px sans-serif`;
-        let textWidth = ctx.measureText(part.name).width;
-        while (textWidth > partL * scale - 10 && fontSize > 8) {
-          fontSize--;
-          ctx.font = `${fontSize}px sans-serif`;
-          textWidth = ctx.measureText(part.name).width;
+    if (layout && layout.type !== 'grid') {
+      const { nx1, ny1, nx2, ny2, l, w, h, x, y, type } = layout;
+      
+      // Block 1
+      for (let iy = 0; iy < ny1; iy++) {
+        for (let ix = 0; ix < nx1; ix++) {
+          drawPart(startX + ix * l * scale, startY + iy * w * scale, l * scale, w * scale, part.name);
         }
-
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-
-        if (fontSize >= 8 && textWidth <= partL * scale - 4) {
-           ctx.fillText(part.name, partX + (partL * scale) / 2, partY + (partW * scale) / 2);
-        } else {
-           ctx.font = '8px sans-serif';
-           let truncated = part.name;
-           while (ctx.measureText(truncated + '...').width > partL * scale - 4 && truncated.length > 0) {
-             truncated = truncated.slice(0, -1);
-           }
-           if (truncated.length > 0) {
-             ctx.fillText(truncated + '...', partX + (partL * scale) / 2, partY + (partW * scale) / 2);
-           }
+      }
+      
+      // Block 2
+      if (type === 'two-block-v') {
+        const b2StartX = startX + x! * scale;
+        for (let iy = 0; iy < ny2; iy++) {
+          for (let ix = 0; ix < nx2; ix++) {
+            drawPart(b2StartX + ix * w * scale, startY + iy * l * scale, w * scale, l * scale, part.name);
+          }
         }
-
-        partsDrawn++;
+      } else if (type === 'two-block-h') {
+        const b2StartY = startY + y! * scale;
+        for (let iy = 0; iy < ny2; iy++) {
+          for (let ix = 0; ix < nx2; ix++) {
+            drawPart(startX + ix * w * scale, b2StartY + iy * l * scale, w * scale, l * scale, part.name);
+          }
+        }
+      }
+    } else {
+      const [partL, partW] = result.orientations.box.split('x').map(Number);
+      const { nx, ny } = result.boxGrid;
+      for (let y = 0; y < ny; y++) {
+        for (let x = 0; x < nx; x++) {
+          drawPart(startX + x * partL * scale, startY + y * partW * scale, partL * scale, partW * scale, part.name);
+        }
       }
     }
   }
@@ -120,7 +123,9 @@ export async function exportToExcel(
   simulations?: Simulation[],
   sessionResult?: SessionResult | null,
   shippingMethod: 'pallet' | 'courier' = 'pallet',
-  projectNumber?: string
+  projectNumber?: string,
+  lastBoxImage?: string,
+  lastPalletImage?: string
 ) {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Packing Report');
@@ -193,10 +198,6 @@ export async function exportToExcel(
       // Generate pallets data for single simulation
       const fullPallets = result.totalPalletsNeeded - (result.isLastPalletDifferent ? 1 : 0);
       
-      // Estimate height of a full pallet
-      const boxDims = result.orientations.pallet.split('x').map(Number);
-      const estimatedHeight = pallet.height + (boxDims[2] || box.height) * (result.boxesPerPallet / (boxDims[0] ? Math.floor(pallet.length / boxDims[0]) * Math.floor(pallet.width / boxDims[1]) : 1));
-
       for (let i = 0; i < fullPallets; i++) {
         palletsData.push({
           boxes: Array(result.boxesPerPalletBalanced).fill({ partName: part.name, simulationId: '1' }),
@@ -208,7 +209,8 @@ export async function exportToExcel(
       if (result.isLastPalletDifferent && result.lastPalletBoxes > 0) {
         // Calculate height for the last pallet based on the number of layers
         const [l, w, h] = result.orientations.pallet.split('x').map(Number);
-        const boxesPerLayer = result.palletGrid.nx * result.palletGrid.ny;
+        // Use boxesPerPallet / nz to get boxes per layer, as nx*ny is 0 for two-block layouts
+        const boxesPerLayer = result.palletGrid.nz > 0 ? Math.max(1, result.boxesPerPallet / result.palletGrid.nz) : 1;
         const layers = Math.ceil(result.lastPalletBoxes / boxesPerLayer);
         const lastPalletHeight = pallet.height + (layers * h);
 
@@ -250,8 +252,9 @@ export async function exportToExcel(
   if (shippingMethod === 'pallet') {
     addSectionHeader(`${sectionCounter}. PALLETS TO ORDER`);
     addTableHeader(['Pallet Type', 'Dimensions (L x W x H) mm', 'Quantity Needed']);
+    const palletNameWithDesc = pallet.name + (pallet.description ? `\n(${pallet.description})` : '');
     addDataRow([
-      pallet.name, 
+      palletNameWithDesc, 
       `${pallet.length} x ${pallet.width} x ${pallet.height}`, 
       palletsData.length
     ]);
@@ -275,9 +278,10 @@ export async function exportToExcel(
     totalBoxesWeight += simTotalWeight;
     totalBoxesCount += sim.result.totalBoxesNeeded;
 
+    const partNameWithDesc = sim.part.name + (sim.part.description ? `\n(${sim.part.description})` : '');
     if (fullBoxes > 0) {
       addDataRow([
-        sim.part.name,
+        partNameWithDesc,
         sim.box.name,
         `${sim.box.length} x ${sim.box.width} x ${sim.box.height}`,
         sim.result.boxWeight.toFixed(2),
@@ -288,7 +292,7 @@ export async function exportToExcel(
     
     if (partsInLast > 0) {
       addDataRow([
-        `${sim.part.name} (Last Box)`,
+        `${partNameWithDesc} (Last Box)`,
         sim.box.name,
         `${sim.box.length} x ${sim.box.width} x ${sim.box.height}`,
         lastBoxWeight.toFixed(2),
@@ -427,6 +431,18 @@ export async function exportToExcel(
     currentRow += 25;
   }
 
+  if (lastBoxImage) {
+    const imageId = workbook.addImage({
+      base64: lastBoxImage,
+      extension: 'png',
+    });
+    worksheet.addImage(imageId, {
+      tl: { col: 0, row: currentRow },
+      ext: { width: 600, height: 450 }
+    });
+    currentRow += 25;
+  }
+
   for (const sim of sims) {
     const firstBoxImg = generateBoxVisualization(sim.part, sim.box, sim.result, false);
     if (firstBoxImg) {
@@ -456,6 +472,16 @@ export async function exportToExcel(
       }
     }
   }
+
+  // Set Page Setup for A4 Printing
+  worksheet.pageSetup = {
+    paperSize: 9, // A4
+    orientation: 'portrait',
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+    margins: { left: 0.5, right: 0.5, top: 0.5, bottom: 0.5, header: 0.3, footer: 0.3 }
+  };
 
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });

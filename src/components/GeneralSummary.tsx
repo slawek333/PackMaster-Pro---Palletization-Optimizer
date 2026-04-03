@@ -9,7 +9,8 @@ import {
   Truck, 
   LayoutGrid, 
   Layers, 
-  Info 
+  Info,
+  Maximize2
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { PackingResult, SessionResult, Simulation, Container, Pallet, Part, ShippingMethod, CalculationMode } from '../types';
@@ -90,27 +91,34 @@ export const GeneralSummary = ({
 
   return (
     <div className={cn(
-      "border rounded-2xl p-5 shadow-sm mb-6 transition-colors duration-300",
+      "border-2 rounded-[2.5rem] p-8 shadow-2xl shadow-zinc-200/50 mb-8 transition-all duration-500 overflow-hidden relative",
       isCourier 
-        ? "bg-blue-50 border-blue-200" 
-        : "bg-emerald-50 border-emerald-200"
+        ? "bg-gradient-to-br from-blue-50 via-white to-blue-50/50 border-blue-100" 
+        : "bg-gradient-to-br from-emerald-50 via-white to-emerald-50/50 border-emerald-100"
     )}>
-      <div className="flex items-center justify-between mb-4">
-        <div className={cn(
-          "flex items-center gap-2",
-          isCourier ? "text-blue-800" : "text-emerald-800"
-        )}>
-          <ClipboardList size={20} />
-          <h2 className="font-bold text-lg">Loading Summary</h2>
+      <div className="absolute top-0 right-0 w-64 h-64 bg-gradient-to-br from-zinc-100/20 to-transparent rounded-full -mr-32 -mt-32 blur-3xl pointer-events-none"></div>
+      
+      <div className="flex items-center justify-between mb-8 relative">
+        <div className="flex items-center gap-4">
+          <div className={cn(
+            "w-12 h-12 rounded-2xl flex items-center justify-center shadow-lg",
+            isCourier ? "bg-blue-600 text-white shadow-blue-200" : "bg-emerald-600 text-white shadow-emerald-200"
+          )}>
+            <ClipboardList size={24} />
+          </div>
+          <div>
+            <h2 className="font-black text-2xl text-zinc-900 tracking-tight">Loading Summary</h2>
+            <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest">Shipment Overview</p>
+          </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-3">
           <span className={cn(
-            "px-2 py-1 text-[10px] font-bold rounded uppercase border",
-            isCourier ? "bg-blue-100 text-blue-700 border-blue-200" : "bg-emerald-100 text-emerald-700 border-emerald-200"
+            "px-4 py-1.5 text-[11px] font-black rounded-xl uppercase border-2 tracking-widest",
+            isCourier ? "bg-blue-100/50 text-blue-700 border-blue-200" : "bg-emerald-100/50 text-emerald-700 border-emerald-200"
           )}>
             {shippingMethod}
           </span>
-          <span className="px-2 py-1 bg-zinc-100 text-zinc-700 text-[10px] font-bold rounded uppercase border border-zinc-200">
+          <span className="px-4 py-1.5 bg-zinc-100/50 text-zinc-600 text-[11px] font-black rounded-xl uppercase border-2 border-zinc-200 tracking-widest">
             {calculationMode.replace('-', ' ')}
           </span>
         </div>
@@ -118,117 +126,106 @@ export const GeneralSummary = ({
 
       {/* Stability Status - Only show if not boxes-only */}
       {calculationMode === 'full' && (
-        <div className={`mb-6 p-4 rounded-xl border flex items-start gap-3 ${isStable ? 'bg-emerald-100/50 border-emerald-200' : 'bg-amber-50 border-amber-200'}`}>
-          {isStable ? (
-            <CheckCircle2 className="text-emerald-600 mt-0.5" size={18} />
-          ) : (
-            <AlertTriangle className="text-amber-600 mt-0.5" size={18} />
-          )}
-          <div>
-            <div className={`font-bold text-sm ${isStable ? 'text-emerald-800' : 'text-amber-800'}`}>
-              Pallet Stability: {isStable ? 'Stable' : 'Unstable'}
+        <div className={cn(
+          "mb-8 p-6 rounded-3xl border-2 flex items-start gap-5 transition-all shadow-sm",
+          isStable 
+            ? "bg-emerald-50/50 border-emerald-100 text-emerald-900" 
+            : "bg-amber-50/50 border-amber-100 text-amber-900"
+        )}>
+          <div className={cn(
+            "w-10 h-10 rounded-xl flex items-center justify-center shrink-0 shadow-md",
+            isStable ? "bg-emerald-100 text-emerald-600" : "bg-amber-100 text-amber-600"
+          )}>
+            {isStable ? <CheckCircle2 size={20} /> : <AlertTriangle size={20} />}
+          </div>
+          <div className="flex-1">
+            <div className="font-black text-base flex items-center gap-2">
+              Pallet Stability: {isStable ? 'Optimal' : 'Attention Required'}
+              {isStable && <span className="text-[10px] bg-emerald-200 text-emerald-800 px-2 py-0.5 rounded-full uppercase tracking-tighter">Verified</span>}
             </div>
             {allWarnings.length > 0 ? (
-              <ul className="mt-1 space-y-1">
+              <ul className="mt-2 space-y-1.5">
                 {allWarnings.map((warning, idx) => (
-                  <li key={idx} className="text-xs text-amber-700 flex items-center gap-1.5">
-                    <span className="w-1 h-1 rounded-full bg-amber-400" />
+                  <li key={idx} className="text-sm font-medium text-amber-700/80 flex items-center gap-2">
+                    <div className="w-1.5 h-1.5 rounded-full bg-amber-400" />
                     {warning}
                   </li>
                 ))}
               </ul>
             ) : (
-              <p className="text-xs text-emerald-700 mt-0.5">All boxes are properly supported and balanced.</p>
+              <p className="text-sm font-medium text-emerald-700/80 mt-1">All boxes are perfectly balanced and supported across all layers.</p>
             )}
           </div>
         </div>
       )}
 
-      {/* Moved Top Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-        <div className={cn(
-          "bg-white/60 rounded-xl p-4 border",
-          isCourier ? "border-blue-100" : "border-emerald-100"
-        )}>
-          <div className={cn(
-            "text-xs font-bold uppercase mb-1",
-            isCourier ? "text-blue-700" : "text-emerald-700"
-          )}>
-            {isSession ? 'Total Boxes' : 'Parts per Box'}
+      {/* Packing Optimization Info */}
+      <div className="flex flex-wrap gap-3 mb-8">
+        <div className="flex items-center gap-2 px-4 py-2 bg-white text-blue-700 rounded-2xl text-xs font-black border-2 border-blue-50 shadow-sm hover:shadow-md transition-shadow">
+          <div className="p-1 bg-blue-50 rounded-lg">
+            <Maximize2 size={14} />
           </div>
-          <div className={cn(
-            "text-2xl font-bold",
-            isCourier ? "text-blue-900" : "text-emerald-900"
-          )}>
-            {isSession ? sessionResult.totalBoxes : result.partsPerBox}
-          </div>
-          <div className={cn(
-            "text-xs mt-1",
-            isCourier ? "text-blue-600" : "text-emerald-600"
-          )}>
-            {isSession ? 'Across all simulations' : `Utilization: ${(result.boxVolumeUtilization * 100).toFixed(1)}%`}
-          </div>
+          Optimal Orientation: {result.orientations.box}
         </div>
-        <div className={cn(
-          "bg-white/60 rounded-xl p-4 border",
-          isCourier ? "border-blue-100" : "border-emerald-100"
-        )}>
-          <div className={cn(
-            "text-xs font-bold uppercase mb-1",
-            isCourier ? "text-blue-700" : "text-emerald-700"
-          )}>
-            {calculationMode === 'full' ? (isSession ? 'Total Pallets' : 'Boxes per Pallet') : 'Total Weight'}
+
+        <div className="flex items-center gap-2 px-4 py-2 bg-white text-indigo-700 rounded-2xl text-xs font-black border-2 border-indigo-50 shadow-sm hover:shadow-md transition-shadow">
+          <div className="p-1 bg-indigo-50 rounded-lg">
+            <Layers size={14} />
           </div>
-          <div className={cn(
-            "text-2xl font-bold",
-            isCourier ? "text-blue-900" : "text-emerald-900"
-          )}>
-            {calculationMode === 'full' 
-              ? (isSession ? sessionResult.pallets.length : Math.min(result.totalBoxesNeeded, result.boxesPerPallet))
-              : totalBoxesWeight.toFixed(1)
-            }
-            {calculationMode === 'full' && !isSession && <span className="text-sm opacity-50 font-normal ml-2">/ {result.boxesPerPallet} max</span>}
-            {calculationMode === 'boxes-only' && <span className="text-sm opacity-50 font-normal ml-1">kg</span>}
-          </div>
-          <div className={cn(
-            "text-xs mt-1",
-            isCourier ? "text-blue-600" : "text-emerald-600"
-          )}>
-            {calculationMode === 'full' ? (
-              <>Utilization: <span className="font-semibold">
-                {((isSession ? sessionResult.overallUtilization : result.palletVolumeUtilization) * 100).toFixed(1)}%
-              </span></>
-            ) : (
-              'Sum of all box weights'
-            )}
-          </div>
+          Layered Packing: Active
         </div>
+        
+        <div className="flex items-center gap-2 px-4 py-2 bg-white text-emerald-700 rounded-2xl text-xs font-black border-2 border-emerald-50 shadow-sm hover:shadow-md transition-shadow">
+          <div className="p-1 bg-emerald-50 rounded-lg">
+            <LayoutGrid size={14} />
+          </div>
+          Grid Optimization: Enabled
+        </div>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <div className={cn(
-          "bg-white/60 rounded-xl p-4 border",
-          isCourier ? "border-blue-100" : "border-emerald-100"
+          "bg-white rounded-3xl p-6 border-2 transition-all hover:shadow-xl group",
+          isCourier ? "border-blue-50 hover:border-blue-200" : "border-emerald-50 hover:border-emerald-200"
         )}>
-          <div className={cn(
-            "text-xs font-bold uppercase mb-1",
-            isCourier ? "text-blue-700" : "text-emerald-700"
-          )}>
-            {isSession ? 'Total Weight' : (isCourier ? 'Total parts' : 'Total Parts / Pallet')}
+          <div className="flex items-center gap-3 mb-4">
+            <div className={cn(
+              "p-2.5 rounded-xl group-hover:scale-110 transition-transform",
+              isCourier ? "bg-blue-50 text-blue-600" : "bg-emerald-50 text-emerald-600"
+            )}>
+              <Package size={20} />
+            </div>
+            <span className="text-[11px] font-black text-zinc-400 uppercase tracking-widest">Total Boxes</span>
           </div>
-          <div className={cn(
-            "text-2xl font-bold",
-            isCourier ? "text-blue-900" : "text-emerald-900"
-          )}>
-            {isSession 
-              ? (calculationMode === 'full' ? sessionResult.totalWeight.toFixed(0) : totalBoxesWeight.toFixed(0)) 
-              : (calculationMode === 'full' ? result.totalPartsPerPallet : currentPart.orderQuantity)
-            }
-            {isSession && <span className="text-sm opacity-50 font-normal ml-1">kg</span>}
+          <div className="text-3xl font-black text-zinc-900 tracking-tight">
+            {isSession ? sessionResult.totalBoxes : result.totalBoxesNeeded}
           </div>
-          <div className={cn(
-            "text-xs mt-1",
-            isCourier ? "text-blue-600" : "text-emerald-600"
-          )}>
-            {isSession ? 'Gross shipment weight' : (calculationMode === 'full' ? `Total Weight: ${result.palletWeight.toFixed(1)} kg` : 'Total order quantity')}
+          <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase">Master Boxes to Order</div>
+        </div>
+
+        <div className="bg-white rounded-3xl p-6 border-2 border-zinc-50 hover:border-zinc-200 transition-all hover:shadow-xl group">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2.5 bg-zinc-50 text-zinc-600 rounded-xl group-hover:scale-110 transition-transform">
+              <Weight size={20} />
+            </div>
+            <span className="text-[11px] font-black text-zinc-400 uppercase tracking-widest">Total Weight</span>
           </div>
+          <div className="text-3xl font-black text-zinc-900 tracking-tight">
+            {(isSession ? sessionResult.totalWeight : (isCourier ? result.boxWeight * result.totalBoxesNeeded : result.palletWeight)).toFixed(1)} <span className="text-lg text-zinc-400">kg</span>
+          </div>
+          <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase">Gross Shipment Weight</div>
+        </div>
+
+        <div className="bg-white rounded-3xl p-6 border-2 border-purple-50 hover:border-purple-200 transition-all hover:shadow-xl group">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl group-hover:scale-110 transition-transform">
+              <LayoutGrid size={20} />
+            </div>
+            <span className="text-[11px] font-black text-zinc-400 uppercase tracking-widest">Utilization</span>
+          </div>
+          <div className="text-3xl font-black text-zinc-900 tracking-tight">
+            {((isSession ? sessionResult.overallUtilization : (isCourier ? result.boxVolumeUtilization : result.palletVolumeUtilization)) * 100).toFixed(1)} <span className="text-lg text-zinc-400">%</span>
+          </div>
+          <div className="mt-2 text-[10px] font-bold text-zinc-400 uppercase">Volume Efficiency</div>
         </div>
       </div>
 

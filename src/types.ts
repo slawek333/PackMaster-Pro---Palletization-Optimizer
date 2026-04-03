@@ -7,9 +7,11 @@ export interface Dimensions {
 export interface Part extends Dimensions {
   id: string;
   name: string;
+  description?: string;
   weight: number; // in kg
   orderQuantity: number;
-  maxPartsPerBox?: number;
+  targetBoxCount?: number;
+  fixedPartsPerBox?: number;
 }
 
 export interface Container extends Dimensions {
@@ -22,13 +24,28 @@ export interface Container extends Dimensions {
 export interface Pallet extends Dimensions {
   id: string;
   name: string;
+  description?: string;
   maxWeight: number; // in kg
   maxHeight: number; // in cm (including pallet)
   emptyWeight: number; // in kg
 }
 
+export interface PackingLayout {
+  type: 'grid' | 'two-block-v' | 'two-block-h';
+  nx1: number;
+  ny1: number;
+  nx2: number;
+  ny2: number;
+  l: number;
+  w: number;
+  h: number;
+  x?: number;
+  y?: number;
+}
+
 export interface PackingResult {
   partsPerBox: number;
+  maxPartsPerBox: number;
   boxesPerPallet: number;
   totalPartsPerPallet: number;
   boxWeight: number;
@@ -42,6 +59,9 @@ export interface PackingResult {
   // Grid dimensions for visualization
   boxGrid: { nx: number; ny: number; nz: number };
   palletGrid: { nx: number; ny: number; nz: number };
+  layout?: PackingLayout;
+  palletLayout?: PackingLayout;
+  boxes?: PackedBox[];
   // Shipment details
   totalBoxesNeeded: number;
   totalPalletsNeeded: number;
