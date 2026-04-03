@@ -13,7 +13,7 @@ import {
   Truck, 
   Download, 
   Mail,
-  RefreshCw, 
+  RotateCcw, 
   Maximize2, 
   Weight, 
   ChevronRight,
@@ -26,7 +26,8 @@ import {
   Sparkles,
   Cpu,
   Archive,
-  Palette
+  Palette,
+  Settings
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
@@ -216,7 +217,7 @@ const NumberInput = ({ value, onChange, className, min, max, step }: any) => {
 
   let errorMsg = "";
   if (isInvalid) {
-    if (localValue === '' || isNaN(numVal)) errorMsg = "Required";
+    if (localValue === '' || isNaN(numVal)) errorMsg = ""; // Removed "Required"
     else if (min !== undefined && numVal < min) errorMsg = `Min: ${min}`;
     else if (max !== undefined && numVal > max) errorMsg = `Max: ${max}`;
   }
@@ -663,8 +664,15 @@ export default function App() {
     const newParts = parts.map(p => p.id === selectedPartId ? { ...p, ...updates } : p);
     setParts(newParts);
     
-    // Auto-suggest box when dimensions or quantity change
-    if (updates.length !== undefined || updates.width !== undefined || updates.height !== undefined || updates.orderQuantity !== undefined) {
+    // Auto-suggest box when dimensions, quantity, or packing constraints change
+    if (
+      updates.length !== undefined || 
+      updates.width !== undefined || 
+      updates.height !== undefined || 
+      updates.orderQuantity !== undefined ||
+      updates.targetBoxCount !== undefined ||
+      updates.fixedPartsPerBox !== undefined
+    ) {
       const updatedPart = newParts.find(p => p.id === selectedPartId)!;
       const suggestedBox = suggestBestBox(updatedPart, pallet);
       
@@ -923,17 +931,17 @@ export default function App() {
       <header className="h-20 bg-white text-zinc-900 flex items-center px-8 sticky top-0 z-50 border-b border-zinc-200 shadow-sm backdrop-blur-md bg-white/90">
         <div className="flex items-center gap-4">
           <div className="relative">
-            <div className="absolute -inset-1 bg-gradient-to-r from-blue-600 to-emerald-600 rounded-xl blur opacity-25 group-hover:opacity-50 transition duration-1000 group-hover:duration-200"></div>
+            <div className="absolute -inset-1 bg-gradient-to-r from-zinc-900 to-zinc-600 rounded-xl blur opacity-10 group-hover:opacity-20 transition duration-1000 group-hover:duration-200"></div>
             <svg width="42" height="42" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="relative">
-              <path d="M 12 12 Q 55 10 95 42 Q 75 80 28 92 Q 10 55 12 12 Z" fill="#18181b" />
-              <path d="M 48 46 Q 35 25 12 12" stroke="white" strokeWidth="5" fill="none" strokeLinecap="round" />
-              <path d="M 48 46 Q 70 35 95 42" stroke="white" strokeWidth="5" fill="none" strokeLinecap="round" />
-              <path d="M 48 46 Q 35 70 28 92" stroke="white" strokeWidth="5" fill="none" strokeLinecap="round" />
+              <path d="M 5 15 L 95 35 L 30 95 L 5 15 Z" fill="black" />
+              <path d="M 5 15 Q 45 35 50 45" stroke="white" strokeWidth="4" fill="none" strokeLinecap="round" />
+              <path d="M 95 35 Q 55 40 50 45" stroke="white" strokeWidth="4" fill="none" strokeLinecap="round" />
+              <path d="M 30 95 Q 40 65 50 45" stroke="white" strokeWidth="4" fill="none" strokeLinecap="round" />
             </svg>
           </div>
           <div>
             <h1 className="font-black text-2xl tracking-[0.2em] text-zinc-900 leading-none">DIAM</h1>
-            <p className="text-[10px] font-bold text-zinc-400 tracking-widest uppercase mt-1">Palletizer Pro</p>
+            <p className="text-[10px] font-bold text-zinc-400 tracking-widest uppercase mt-1">Palletizer</p>
           </div>
         </div>
 
@@ -942,7 +950,7 @@ export default function App() {
             onClick={handleReset}
             className="text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 px-4 py-2 rounded-xl transition-all flex items-center gap-2 text-sm font-bold"
           >
-            <RefreshCw size={16} className="text-zinc-400" />
+            <RotateCcw size={16} className="text-zinc-400" />
             Reset
           </button>
           <div className="h-8 w-[1px] bg-zinc-200 mx-2"></div>
@@ -1056,11 +1064,11 @@ export default function App() {
           </section>
 
           {/* Part Library */}
-          <section className="glass-panel p-5 bg-blue-50/30 border-blue-100">
+          <section className="glass-panel p-5 border-l-4 border-l-blue-500">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-blue-50 text-blue-600 rounded-md">
-                  <Cpu size={18} />
+                <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
+                  <Package size={18} />
                 </div>
                 <h2 className="font-semibold text-zinc-900">Part Library</h2>
               </div>
@@ -1231,11 +1239,11 @@ export default function App() {
           </section>
 
           {/* Box Library */}
-          <section className="glass-panel p-5 bg-amber-50/30 border-amber-100">
+          <section className="glass-panel p-5 border-l-4 border-l-orange-500">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-orange-50 text-orange-600 rounded-md">
-                  <Archive size={18} />
+                <div className="p-1.5 bg-orange-50 text-orange-600 rounded-lg">
+                  <Box size={18} />
                 </div>
                 <h2 className="font-semibold text-zinc-900">Box Library</h2>
               </div>
@@ -1247,7 +1255,7 @@ export default function App() {
                   title="Use AI to suggest the optimal box dimensions"
                 >
                   {isSuggestingAI ? (
-                    <RefreshCw size={14} className="animate-spin" />
+                    <RotateCcw size={14} className="animate-spin" />
                   ) : (
                     <Sparkles size={14} />
                   )}
@@ -1402,10 +1410,10 @@ export default function App() {
 
           {/* Pallet Configuration - Only show if not in courier mode */}
           {shippingMethod === 'pallet' && (
-            <section className="glass-panel p-5 bg-emerald-50/30 border-emerald-100">
+            <section className="glass-panel p-5 border-l-4 border-l-emerald-500">
               <div className="flex items-center gap-2 mb-4">
-                <div className="p-1.5 bg-purple-50 text-purple-600 rounded-md">
-                  <Palette size={18} />
+                <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg">
+                  <Layers size={18} />
                 </div>
                 <h2 className="font-semibold text-zinc-900">Pallet Setup</h2>
               </div>
@@ -1528,10 +1536,10 @@ export default function App() {
           )}
 
           {/* Shipment Planning */}
-          <section className="glass-panel p-5 bg-purple-50/30 border-purple-100">
+          <section className="glass-panel p-5 border-l-4 border-l-zinc-900">
             <div className="flex items-center gap-2 mb-4">
-              <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-md">
-                <Truck size={18} />
+              <div className="p-1.5 bg-zinc-900 text-white rounded-lg">
+                <Settings size={18} />
               </div>
               <h2 className="font-semibold text-zinc-900">Shipment Summary</h2>
             </div>
@@ -1575,10 +1583,10 @@ export default function App() {
 
           {/* Active Session */}
           {simulations.length > 0 && (
-            <section className="glass-panel p-5 bg-indigo-50/30 border-indigo-100">
+            <section className="glass-panel p-5 border-l-4 border-l-indigo-500">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-blue-50 text-blue-600 rounded-md">
+                  <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
                     <LayoutGrid size={18} />
                   </div>
                   <h2 className="font-semibold text-zinc-900">Active Session</h2>
@@ -1726,7 +1734,7 @@ export default function App() {
               {exportStep !== 'idle' && (
                 <div className="fixed inset-0 z-[100] bg-white/90 backdrop-blur-md flex flex-col items-center justify-center">
                   <div className="text-center space-y-4">
-                    <RefreshCw size={48} className="mx-auto text-emerald-600 animate-spin" />
+                    <RotateCcw size={48} className="mx-auto text-emerald-600 animate-spin" />
                     <h2 className="text-xl font-bold text-zinc-900">Generating Excel Report...</h2>
                     <p className="text-zinc-500">Capturing 3D visualizations for the report</p>
                     <div className="text-sm font-mono text-zinc-400">Step: {exportStep}</div>
