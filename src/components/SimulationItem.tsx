@@ -12,7 +12,7 @@ export const SimulationItem = ({ sim, idx, onRemove, onEdit }: { sim: Simulation
         onClick={() => setIsExpanded(!isExpanded)}
       >
         <div className="flex items-center gap-4">
-          <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center text-white font-black text-xs shadow-sm">
+          <div className="w-10 h-10 rounded-xl bg-zinc-900 flex items-center justify-center text-white font-black text-xs shadow-sm tilted-icon-container">
             {idx + 1}
           </div>
           <div>

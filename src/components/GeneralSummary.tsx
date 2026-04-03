@@ -98,7 +98,7 @@ export const GeneralSummary = ({
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-10 relative">
         <div className="flex items-center gap-5">
           <div className={cn(
-            "w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg transform -rotate-3",
+            "w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg tilted-icon-container",
             isCourier ? "bg-zinc-900 text-white shadow-zinc-200" : "bg-zinc-900 text-white shadow-zinc-200"
           )}>
             <ClipboardList size={28} />
@@ -181,7 +181,7 @@ export const GeneralSummary = ({
             <Box size={80} />
           </div>
           <div className="flex items-center gap-3 mb-6">
-            <div className="p-2.5 bg-white text-zinc-900 rounded-xl shadow-sm border border-zinc-100">
+            <div className="p-2.5 bg-white text-zinc-900 rounded-xl shadow-sm border border-zinc-100 tilted-icon-container">
               <Box size={22} />
             </div>
             <span className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em]">Total Boxes</span>
@@ -197,13 +197,20 @@ export const GeneralSummary = ({
             <Weight size={80} />
           </div>
           <div className="flex items-center gap-3 mb-6">
-            <div className="p-2.5 bg-white text-zinc-900 rounded-xl shadow-sm border border-zinc-100">
+            <div className="p-2.5 bg-white text-zinc-900 rounded-xl shadow-sm border border-zinc-100 tilted-icon-container">
               <Weight size={22} />
             </div>
             <span className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em]">Total Weight</span>
           </div>
           <div className="text-5xl font-black text-zinc-900 tracking-tighter">
-            {(isSession ? sessionResult.totalWeight : (isCourier ? result.boxWeight * result.totalBoxesNeeded : result.palletWeight)).toFixed(1)} <span className="text-xl text-zinc-400 ml-1">kg</span>
+            {(isSession 
+              ? sessionResult.totalWeight 
+              : (isCourier 
+                  ? totalBoxesWeight 
+                  : (result.totalPalletsNeeded > 0 
+                      ? (result.totalPalletsNeeded - 1) * result.balancedPalletWeight + result.lastPalletWeight 
+                      : 0))
+            ).toFixed(1)} <span className="text-xl text-zinc-400 ml-1">kg</span>
           </div>
           <div className="mt-3 text-[10px] font-black text-zinc-400 uppercase tracking-widest">Gross Shipment Weight</div>
         </div>
@@ -213,7 +220,7 @@ export const GeneralSummary = ({
             <LayoutGrid size={80} />
           </div>
           <div className="flex items-center gap-3 mb-6">
-            <div className="p-2.5 bg-white text-zinc-900 rounded-xl shadow-sm border border-zinc-100">
+            <div className="p-2.5 bg-white text-zinc-900 rounded-xl shadow-sm border border-zinc-100 tilted-icon-container">
               <LayoutGrid size={22} />
             </div>
             <span className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em]">Utilization</span>

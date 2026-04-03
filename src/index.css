@@ -1,8 +1,9 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=Poppins:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Poppins", ui-sans-serif, system-ui, sans-serif;
+  --font-inter: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
@@ -20,6 +21,14 @@ body {
 
 .label-text {
   @apply block text-xs font-semibold text-zinc-500 uppercase tracking-wider mb-1;
+}
+
+.tilted-icon-container {
+  @apply rotate-[-4deg] transition-transform duration-300;
+}
+
+.tilted-icon-container:hover {
+  @apply rotate-0;
 }
 
 .custom-scrollbar::-webkit-scrollbar {

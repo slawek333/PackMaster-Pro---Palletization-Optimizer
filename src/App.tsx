@@ -940,7 +940,7 @@ export default function App() {
             </svg>
           </div>
           <div>
-            <h1 className="font-black text-2xl tracking-[0.2em] text-zinc-900 leading-none">DIAM</h1>
+            <h1 className="font-inter font-black text-2xl tracking-[0.2em] text-zinc-900 leading-none">DIAM</h1>
             <p className="text-[10px] font-bold text-zinc-400 tracking-widest uppercase mt-1">Palletizer</p>
           </div>
         </div>
@@ -950,7 +950,7 @@ export default function App() {
             onClick={handleReset}
             className="text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 px-4 py-2 rounded-xl transition-all flex items-center gap-2 text-sm font-bold"
           >
-            <RotateCcw size={16} className="text-zinc-400" />
+            <RotateCcw size={16} className="text-zinc-400 tilted-icon-container" />
             Reset
           </button>
           <div className="h-8 w-[1px] bg-zinc-200 mx-2"></div>
@@ -958,14 +958,14 @@ export default function App() {
             onClick={() => handleExport('excel')}
             className="bg-white hover:bg-zinc-50 text-zinc-900 border-2 border-zinc-900 px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-sm active:scale-95"
           >
-            <Download size={18} />
+            <Download size={18} className="tilted-icon-container" />
             Excel Report
           </button>
           <button 
             onClick={() => handleExport('email')}
             className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-lg shadow-blue-200 active:scale-95"
           >
-            <Mail size={18} />
+            <Mail size={18} className="tilted-icon-container" />
             Send Email
           </button>
         </div>
@@ -1067,7 +1067,7 @@ export default function App() {
           <section className="glass-panel p-5 border-l-4 border-l-blue-500">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
+                <div className="p-1.5 bg-blue-50 text-blue-600 rounded-lg tilted-icon-container">
                   <Package size={18} />
                 </div>
                 <h2 className="font-semibold text-zinc-900">Part Library</h2>
@@ -1242,7 +1242,7 @@ export default function App() {
           <section className="glass-panel p-5 border-l-4 border-l-orange-500">
             <div className="flex items-center justify-between mb-4">
               <div className="flex items-center gap-2">
-                <div className="p-1.5 bg-orange-50 text-orange-600 rounded-lg">
+                <div className="p-1.5 bg-orange-50 text-orange-600 rounded-lg tilted-icon-container">
                   <Box size={18} />
                 </div>
                 <h2 className="font-semibold text-zinc-900">Box Library</h2>
@@ -1412,7 +1412,7 @@ export default function App() {
           {shippingMethod === 'pallet' && (
             <section className="glass-panel p-5 border-l-4 border-l-emerald-500">
               <div className="flex items-center gap-2 mb-4">
-                <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg">
+                <div className="p-1.5 bg-emerald-50 text-emerald-600 rounded-lg tilted-icon-container">
                   <Layers size={18} />
                 </div>
                 <h2 className="font-semibold text-zinc-900">Pallet Setup</h2>
@@ -1538,7 +1538,7 @@ export default function App() {
           {/* Shipment Planning */}
           <section className="glass-panel p-5 border-l-4 border-l-zinc-900">
             <div className="flex items-center gap-2 mb-4">
-              <div className="p-1.5 bg-zinc-900 text-white rounded-lg">
+              <div className="p-1.5 bg-zinc-900 text-white rounded-lg tilted-icon-container">
                 <Settings size={18} />
               </div>
               <h2 className="font-semibold text-zinc-900">Shipment Summary</h2>
@@ -1586,7 +1586,7 @@ export default function App() {
             <section className="glass-panel p-5 border-l-4 border-l-indigo-500">
               <div className="flex items-center justify-between mb-4">
                 <div className="flex items-center gap-2">
-                  <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg">
+                  <div className="p-1.5 bg-indigo-50 text-indigo-600 rounded-lg tilted-icon-container">
                     <LayoutGrid size={18} />
                   </div>
                   <h2 className="font-semibold text-zinc-900">Active Session</h2>
@@ -2024,7 +2024,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="p-6 text-center text-zinc-400 text-xs border-t border-zinc-100 bg-white">
-        <p>© 2026 DIAM Palletizer - Advanced Logistics Optimization Engine</p>
+        <p>© 2026 <span className="font-inter font-bold">DIAM</span> Palletizer - Advanced Logistics Optimization Engine</p>
         <p className="mt-1 italic">All calculations are based on rectangular bounding boxes and standard metric units.</p>
       </footer>
     </div>
