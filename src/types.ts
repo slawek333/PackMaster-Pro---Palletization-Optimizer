@@ -12,6 +12,7 @@ export interface Part extends Dimensions {
   orderQuantity: number;
   targetBoxCount?: number;
   fixedPartsPerBox?: number;
+  createdAt?: number;
 }
 
 export interface Container extends Dimensions {
@@ -19,6 +20,7 @@ export interface Container extends Dimensions {
   name: string;
   maxWeight: number; // in kg
   emptyWeight: number; // in kg
+  createdAt?: number;
 }
 
 export interface Pallet extends Dimensions {
@@ -43,6 +45,13 @@ export interface PackingLayout {
   y?: number;
 }
 
+export interface ShipmentItem {
+  id: string;
+  partId: string;
+  boxId: string;
+  quantity: number;
+}
+
 export interface PackingResult {
   partsPerBox: number;
   maxPartsPerBox: number;
@@ -62,6 +71,7 @@ export interface PackingResult {
   layout?: PackingLayout;
   palletLayout?: PackingLayout;
   boxes?: PackedBox[];
+  pallets?: PackedBox[][];
   // Shipment details
   totalBoxesNeeded: number;
   totalPalletsNeeded: number;
@@ -87,6 +97,8 @@ export interface PackedBox extends Dimensions {
   color: string;
   edgeColor: string;
   name: string;
+  weight?: number;
+  partsCount?: number;
   isStable?: boolean;
   supportArea?: number; // percentage of bottom area supported
 }

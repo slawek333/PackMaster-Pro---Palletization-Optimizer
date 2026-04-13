@@ -8,19 +8,35 @@
 }
 
 body {
-  @apply bg-zinc-100/80 text-zinc-900 font-sans antialiased transition-colors duration-200;
+  @apply bg-zinc-50 text-zinc-900 font-sans antialiased transition-colors duration-200;
 }
 
 .glass-panel {
-  @apply bg-white border border-zinc-200 shadow-[0_2px_10px_-3px_rgba(0,0,0,0.07)] rounded-2xl overflow-hidden;
+  @apply bg-white/70 backdrop-blur-2xl border border-white/40 shadow-[0_8px_32px_rgba(0,0,0,0.04)] rounded-[2rem] overflow-hidden transition-all duration-300;
+}
+
+.glass-panel:hover {
+  @apply shadow-[0_12px_48px_rgba(0,0,0,0.06)];
 }
 
 .input-field {
-  @apply w-full px-3 py-2 bg-zinc-50/50 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900 focus:border-zinc-900 outline-none transition-all text-sm font-bold placeholder:text-zinc-400;
+  @apply w-full px-4 py-2 bg-white/50 border border-zinc-200 rounded-xl focus:ring-2 focus:ring-zinc-900 focus:border-zinc-900 outline-none transition-all text-sm font-bold text-zinc-800 placeholder:text-zinc-400 shadow-sm;
+}
+
+.custom-scrollbar-dark::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar-dark::-webkit-scrollbar-track {
+  @apply bg-zinc-800 rounded-full;
+}
+
+.custom-scrollbar-dark::-webkit-scrollbar-thumb {
+  @apply bg-zinc-600 rounded-full hover:bg-zinc-500 transition-colors;
 }
 
 .label-text {
-  @apply block text-xs font-black text-zinc-500 uppercase tracking-wider mb-1;
+  @apply block text-[10px] font-bold text-zinc-500 uppercase tracking-wider mb-1;
 }
 
 .tilted-icon-container {

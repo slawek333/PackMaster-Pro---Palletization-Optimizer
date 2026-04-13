@@ -2,49 +2,17 @@ import { PackingResult, Part, Container, Pallet, PalletLoad } from '../types';
 import { saveAs } from 'file-saver';
 
 export function generateEML(
-  part: Part,
-  box: Container,
+  items: { part: Part; box: Container; quantity: number; result: PackingResult }[],
   pallet: Pallet,
-  result: PackingResult,
+  shipmentResult: PackingResult,
   shippingMethod: 'pallet' | 'courier',
   projectNumber?: string,
   deliveryAddress?: string,
-  palletImage?: string,
-  boxImage?: string,
-  lastBoxImage?: string,
-  lastPalletImage?: string
+  palletImage?: string
 ): string {
   const subject = `Packing Report - ${projectNumber || 'DIAM'}`;
   const date = new Date().toUTCString();
   
-  const sims = [{ id: '1', part, box, quantity: part.orderQuantity, result }];
-  
-  let palletsData: PalletLoad[] = [];
-  if (shippingMethod === 'pallet') {
-    const fullPallets = result.totalPalletsNeeded - (result.isLastPalletDifferent ? 1 : 0);
-    for (let i = 0; i < fullPallets; i++) {
-      palletsData.push({
-        boxes: Array(result.boxesPerPalletBalanced).fill({ partName: part.name }),
-        weight: result.balancedPalletWeight,
-        volumeUtilization: result.palletVolumeUtilization,
-        loadDimensions: result.loadDimensions
-      });
-    }
-    if (result.isLastPalletDifferent && result.lastPalletBoxes > 0) {
-      const [l, w, h] = result.orientations.pallet.split('x').map(Number);
-      const boxesPerLayer = result.palletGrid.nz > 0 ? Math.max(1, result.boxesPerPallet / result.palletGrid.nz) : 1;
-      const layers = Math.ceil(result.lastPalletBoxes / boxesPerLayer);
-      const lastPalletHeight = pallet.height + (layers * h);
-
-      palletsData.push({
-        boxes: Array(result.lastPalletBoxes).fill({ partName: part.name }),
-        weight: result.lastPalletWeight,
-        volumeUtilization: result.palletVolumeUtilization * (result.lastPalletBoxes / result.boxesPerPalletBalanced),
-        loadDimensions: { length: result.loadDimensions.length, width: result.loadDimensions.width, height: lastPalletHeight }
-      });
-    }
-  }
-
   let htmlBody = `
     <html>
       <head>
@@ -62,8 +30,28 @@ export function generateEML(
       </head>
       <body>
         <div class="header">
-          <h1 style="margin:0">DIAM Packing Report</h1>
-          <p style="margin:5px 0 0 0; opacity: 0.8;">Logistics & Optimization Details</p>
+          <div style="display: flex; align-items: center; justify-content: space-between;">
+            <div style="display: flex; align-items: center; gap: 15px;">
+              <div style="background: white; padding: 5px; border-radius: 6px; display: flex; align-items: center; justify-content: center;">
+                <svg width="40" height="40" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M 5 15 L 95 35 L 30 95 L 5 15 Z" fill="black" />
+                  <path d="M 5 15 Q 45 35 50 45" stroke="white" stroke-width="4" fill="none" stroke-linecap="round" />
+                  <path d="M 95 35 Q 55 40 50 45" stroke="white" stroke-width="4" fill="none" stroke-linecap="round" />
+                  <path d="M 30 95 Q 40 65 50 45" stroke="white" stroke-width="4" fill="none" stroke-linecap="round" />
+                </svg>
+              </div>
+              <div>
+                <h1 style="margin:0; font-size: 28px; letter-spacing: 2px;">DIAM Packing Report</h1>
+                <p style="margin:2px 0 0 0; opacity: 0.8; font-size: 12px;">Logistics & Optimization Details</p>
+              </div>
+            </div>
+            ${projectNumber ? `
+            <div style="text-align: right;">
+              <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.7;">Project No.</div>
+              <div style="font-size: 24px; font-weight: bold;">${projectNumber}</div>
+            </div>
+            ` : ''}
+          </div>
         </div>
         <div class="content">
           <p><strong>Generated on:</strong> ${new Date().toLocaleString()}</p>
@@ -84,15 +72,15 @@ export function generateEML(
   `;
 
   const boxOrders = new Map<string, { dims: string, qty: number }>();
-  sims.forEach(sim => {
-    const key = `${sim.box.name}-${sim.box.length}x${sim.box.width}x${sim.box.height}`;
+  items.forEach(item => {
+    const key = `${item.box.name}-${item.box.length}x${item.box.width}x${item.box.height}`;
     if (!boxOrders.has(key)) {
       boxOrders.set(key, { 
-        dims: `${sim.box.length} x ${sim.box.width} x ${sim.box.height}`, 
+        dims: `${item.box.length} x ${item.box.width} x ${item.box.height}`, 
         qty: 0 
       });
     }
-    boxOrders.get(key)!.qty += sim.result.totalBoxesNeeded;
+    boxOrders.get(key)!.qty += item.result.totalBoxesNeeded;
   });
 
   boxOrders.forEach((data, nameKey) => {
@@ -127,7 +115,7 @@ export function generateEML(
               <tr>
                 <td>${pallet.name}${pallet.description ? `<br/><small>(${pallet.description})</small>` : ''}</td>
                 <td>${pallet.length} x ${pallet.width} x ${pallet.height}</td>
-                <td><strong>${palletsData.length}</strong></td>
+                <td><strong>${shipmentResult.totalPalletsNeeded}</strong></td>
               </tr>
             </tbody>
           </table>
@@ -154,23 +142,23 @@ export function generateEML(
   let totalBoxesWeight = 0;
   let totalBoxesCount = 0;
 
-  sims.forEach(sim => {
-    const fullBoxes = Math.floor(sim.quantity / sim.result.partsPerBox);
-    const partsInLast = sim.quantity % sim.result.partsPerBox;
-    const lastBoxWeight = partsInLast > 0 ? (partsInLast * sim.part.weight + sim.box.emptyWeight) : 0;
-    const simTotalWeight = (fullBoxes * sim.result.boxWeight) + lastBoxWeight;
+  items.forEach(item => {
+    const fullBoxes = Math.floor(item.quantity / item.result.partsPerBox);
+    const partsInLast = item.quantity % item.result.partsPerBox;
+    const lastBoxWeight = partsInLast > 0 ? (partsInLast * item.part.weight + item.box.emptyWeight) : 0;
+    const itemTotalWeight = (fullBoxes * item.result.boxWeight) + lastBoxWeight;
     
-    totalBoxesWeight += simTotalWeight;
-    totalBoxesCount += sim.result.totalBoxesNeeded;
+    totalBoxesWeight += itemTotalWeight;
+    totalBoxesCount += item.result.totalBoxesNeeded;
 
     if (fullBoxes > 0) {
       htmlBody += `
         <tr>
-          <td>${sim.part.name}${sim.part.description ? `<br/><small>(${sim.part.description})</small>` : ''}</td>
-          <td>${sim.box.name}</td>
-          <td>${sim.box.length} x ${sim.box.width} x ${sim.box.height}</td>
-          <td>${sim.result.boxWeight.toFixed(2)}</td>
-          <td>${sim.result.partsPerBox}</td>
+          <td>${item.part.name}${item.part.description ? `<br/><small>(${item.part.description})</small>` : ''}</td>
+          <td>${item.box.name}</td>
+          <td>${item.box.length} x ${item.box.width} x ${item.box.height}</td>
+          <td>${item.result.boxWeight.toFixed(2)}</td>
+          <td>${item.result.partsPerBox}</td>
           <td>${fullBoxes}</td>
         </tr>
       `;
@@ -179,9 +167,9 @@ export function generateEML(
     if (partsInLast > 0) {
       htmlBody += `
         <tr>
-          <td>${sim.part.name} (Last Box)${sim.part.description ? `<br/><small>(${sim.part.description})</small>` : ''}</td>
-          <td>${sim.box.name}</td>
-          <td>${sim.box.length} x ${sim.box.width} x ${sim.box.height}</td>
+          <td>${item.part.name} (Last Box)${item.part.description ? `<br/><small>(${item.part.description})</small>` : ''}</td>
+          <td>${item.box.name}</td>
+          <td>${item.box.length} x ${item.box.width} x ${item.box.height}</td>
           <td>${lastBoxWeight.toFixed(2)}</td>
           <td>${partsInLast}</td>
           <td>1</td>
@@ -196,7 +184,7 @@ export function generateEML(
   `;
   sectionCounter++;
 
-  if (shippingMethod === 'pallet') {
+  if (shippingMethod === 'pallet' && shipmentResult.pallets) {
     htmlBody += `
           <div class="section-title">${sectionCounter}. PALLET LOAD DETAILS</div>
           <table>
@@ -212,25 +200,27 @@ export function generateEML(
             <tbody>
     `;
 
-    const groupedPallets = new Map<string, { count: number, indices: number[], pallet: PalletLoad, partsStr: string }>();
+    const groupedPallets = new Map<string, { count: number, indices: number[], weight: number, boxes: number, partsStr: string, dims: string }>();
     
-    palletsData.forEach((p, index) => {
-      const dims = p.loadDimensions ? `${Math.round(p.loadDimensions.length)}x${Math.round(p.loadDimensions.width)}x${Math.round(p.loadDimensions.height)}` : 'N/A';
-      const weight = p.weight.toFixed(1);
-      const boxCount = p.boxes.length;
+    shipmentResult.pallets.forEach((p, index) => {
+      const maxHeight = p.length > 0 ? Math.max(...p.map(b => b.z + b.height)) : 0;
+      const totalHeight = pallet.height + maxHeight;
+      const dims = `${pallet.length} x ${pallet.width} x ${Math.round(totalHeight)}`;
+      
+      const palletWeight = p.reduce((sum, b) => sum + (b.weight || 0), pallet.emptyWeight);
+      const weightStr = palletWeight.toFixed(1);
+      const boxCount = p.length;
       
       const partCounts: { [key: string]: number } = {};
-      p.boxes.forEach(c => {
-        const partsInBox = result.partsPerBox;
-        partCounts[c.partName] = (partCounts[c.partName] || 0) + partsInBox;
+      p.forEach(b => {
+        partCounts[b.partName] = (partCounts[b.partName] || 0) + 1;
       });
       
-      const partsStr = Object.entries(partCounts).map(([name, qty]) => `${name} (${qty} pcs)`).sort().join('<br/>');
-      
-      const signature = `${dims}-${weight}-${boxCount}-${partsStr}`;
+      const partsStr = Object.entries(partCounts).map(([name, count]) => `${name}: ${count} boxes`).sort().join('<br/>');
+      const signature = `${dims}-${weightStr}-${boxCount}-${partsStr}`;
       
       if (!groupedPallets.has(signature)) {
-        groupedPallets.set(signature, { count: 0, indices: [], pallet: p, partsStr });
+        groupedPallets.set(signature, { count: 0, indices: [], weight: palletWeight, boxes: boxCount, partsStr, dims });
       }
       const group = groupedPallets.get(signature)!;
       group.count++;
@@ -257,15 +247,12 @@ export function generateEML(
         }
       }
         
-      const p = group.pallet;
-      const dims = p.loadDimensions ? `${Math.round(p.loadDimensions.length)} x ${Math.round(p.loadDimensions.width)} x ${Math.round(p.loadDimensions.height)}` : 'N/A';
-
       htmlBody += `
         <tr>
           <td>${indicesStr}</td>
-          <td>${dims}</td>
-          <td>${p.weight.toFixed(2)}</td>
-          <td>${p.boxes.length}</td>
+          <td>${group.dims}</td>
+          <td>${group.weight.toFixed(2)}</td>
+          <td>${group.boxes}</td>
           <td>${group.partsStr}</td>
         </tr>
       `;
@@ -291,24 +278,13 @@ export function generateEML(
               </thead>
               <tbody>
                 <tr>
-                  ${shippingMethod === 'pallet' ? `<td><strong>${palletsData.length}</strong></td>` : ''}
+                  ${shippingMethod === 'pallet' ? `<td><strong>${shipmentResult.totalPalletsNeeded}</strong></td>` : ''}
                   <td><strong>${totalBoxesCount}</strong></td>
-                  <td><strong>${(shippingMethod === 'pallet' ? palletsData.reduce((sum, p) => sum + p.weight, 0) : totalBoxesWeight).toFixed(2)}</strong></td>
+                  <td><strong>${(shippingMethod === 'pallet' ? (shipmentResult.pallets?.reduce((sum, p) => sum + p.reduce((s, b) => s + (b.weight || 0), pallet.emptyWeight), 0) || 0) : totalBoxesWeight).toFixed(2)}</strong></td>
                 </tr>
               </tbody>
             </table>
           </div>
-
-          ${(palletImage || boxImage || lastBoxImage || lastPalletImage) ? `
-          <div class="section-title">${sectionCounter + 1}. VISUALIZATIONS</div>
-          <div style="margin-top: 20px;">
-            ${boxImage ? `<div style="margin-bottom: 20px;"><p style="font-weight: bold; margin-bottom: 5px; color: #374151;">Box Packing Scheme</p><img src="${boxImage}" style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 8px;" alt="Box Visualization" /></div>` : ''}
-            ${lastBoxImage ? `<div style="margin-bottom: 20px;"><p style="font-weight: bold; margin-bottom: 5px; color: #374151;">Last Box Packing Scheme (Partial)</p><img src="${lastBoxImage}" style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 8px;" alt="Last Box Visualization" /></div>` : ''}
-            
-            ${palletImage && shippingMethod === 'pallet' ? `<div style="margin-bottom: 20px;"><p style="font-weight: bold; margin-bottom: 5px; color: #374151;">Pallet Layout (${palletsData.length > 0 ? palletsData.filter(p => p.boxes.length === palletsData[0].boxes.length).length : 1}x)</p><img src="${palletImage}" style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 8px;" alt="Pallet Visualization" /></div>` : ''}
-            ${lastPalletImage && shippingMethod === 'pallet' ? `<div style="margin-bottom: 20px;"><p style="font-weight: bold; margin-bottom: 5px; color: #374151;">Last Pallet Layout (${palletsData.length > 0 ? palletsData.length - palletsData.filter(p => p.boxes.length === palletsData[0].boxes.length).length : 0}x)</p><img src="${lastPalletImage}" style="max-width: 100%; height: auto; border: 1px solid #e5e7eb; border-radius: 8px;" alt="Last Pallet Visualization" /></div>` : ''}
-          </div>
-          ` : ''}
 
           <div class="footer">
             DIAM Palletizer - Professional Logistics Optimization System
@@ -333,22 +309,16 @@ export function generateEML(
 }
 
 export function sendEmailReport(
-  part: Part,
-  box: Container,
+  items: { part: Part; box: Container; quantity: number; result: PackingResult }[],
   pallet: Pallet,
-  result: PackingResult,
+  shipmentResult: PackingResult,
   shippingMethod: 'pallet' | 'courier',
   projectNumber?: string,
   deliveryAddress?: string,
-  palletImage?: string,
-  boxImage?: string,
-  lastBoxImage?: string,
-  lastPalletImage?: string
+  palletImage?: string
 ) {
-  const emlContent = generateEML(part, box, pallet, result, shippingMethod, projectNumber, deliveryAddress, palletImage, boxImage, lastBoxImage, lastPalletImage);
+  const emlContent = generateEML(items, pallet, shipmentResult, shippingMethod, projectNumber, deliveryAddress, palletImage);
   const blob = new Blob([emlContent], { type: 'message/rfc822' });
   const fileName = `Packing_Report_${projectNumber || 'DIAM'}.eml`;
   saveAs(blob, fileName);
-  
-  // Removed window.location.href mailto to avoid ERR_BLOCKED_BY_RESPONSE in iframe
 }

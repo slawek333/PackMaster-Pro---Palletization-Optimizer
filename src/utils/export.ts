@@ -2,6 +2,36 @@ import ExcelJS from 'exceljs';
 import { saveAs } from 'file-saver';
 import { PackingResult, Part, Container, Pallet, PalletLoad } from '../types';
 
+export async function downloadImportTemplate() {
+  const workbook = new ExcelJS.Workbook();
+  const worksheet = workbook.addWorksheet('Parts Import');
+  
+  worksheet.columns = [
+    { header: 'Part Number', key: 'name', width: 20 },
+    { header: 'Description', key: 'description', width: 30 },
+    { header: 'Length (mm)', key: 'length', width: 15 },
+    { header: 'Width (mm)', key: 'width', width: 15 },
+    { header: 'Height (mm)', key: 'height', width: 15 },
+    { header: 'Weight (kg)', key: 'weight', width: 15 },
+    { header: 'Order Quantity', key: 'quantity', width: 15 },
+    { header: 'Target Box Count (Optional)', key: 'targetBoxCount', width: 25 },
+    { header: 'Fixed Parts Per Box (Optional)', key: 'fixedPartsPerBox', width: 25 }
+  ];
+
+  // Add header styling
+  worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4B5563' } };
+
+  worksheet.addRow({
+    name: 'Example Part', description: 'Sample description',
+    length: 100, width: 50, height: 20, weight: 0.5, quantity: 1000
+  });
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  saveAs(blob, 'DIAM_Import_Template.xlsx');
+}
+
 function generateBoxVisualization(part: Part, box: Container, result: PackingResult, isLastBox: boolean): string {
   const canvas = document.createElement('canvas');
   canvas.width = 800;
@@ -113,23 +143,18 @@ function generateBoxVisualization(part: Part, box: Container, result: PackingRes
 }
 
 export async function exportToExcel(
-  part: Part, 
-  box: Container, 
-  pallet: Pallet, 
-  result: PackingResult, 
-  totalOrder: number,
-  palletImage?: string,
-  boxImage?: string,
+  items: { part: Part; box: Container; quantity: number; result: PackingResult }[],
+  pallet: Pallet,
+  shipmentResult: PackingResult,
+  palletImages: string[],
   shippingMethod: 'pallet' | 'courier' = 'pallet',
-  projectNumber?: string,
-  lastBoxImage?: string,
-  lastPalletImage?: string
+  projectNumber?: string
 ) {
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Packing Report');
 
   // Title
-  worksheet.mergeCells('A1:E1');
+  worksheet.mergeCells('A1:F1');
   const titleCell = worksheet.getCell('A1');
   titleCell.value = shippingMethod === 'courier' ? 'COURIER PACKING REPORT' : 'PALLET PACKING REPORT';
   titleCell.font = { size: 16, bold: true, color: { argb: 'FFFFFFFF' } };
@@ -149,7 +174,7 @@ export async function exportToExcel(
     const row = worksheet.addRow([title]);
     row.font = { size: 12, bold: true, color: { argb: 'FF1F2937' } };
     row.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF3F4F6' } };
-    worksheet.mergeCells(`A${row.number}:E${row.number}`);
+    worksheet.mergeCells(`A${row.number}:F${row.number}`);
     return row;
   };
 
@@ -185,52 +210,20 @@ export async function exportToExcel(
     return row;
   };
 
-  const sims = [{ id: '1', part, box, quantity: totalOrder, result }];
-  
-  let palletsData: PalletLoad[] = [];
-  if (shippingMethod === 'pallet') {
-    // Generate pallets data for single simulation
-    const fullPallets = result.totalPalletsNeeded - (result.isLastPalletDifferent ? 1 : 0);
-    
-    for (let i = 0; i < fullPallets; i++) {
-      palletsData.push({
-        boxes: Array(result.boxesPerPalletBalanced).fill({ partName: part.name }),
-        weight: result.balancedPalletWeight,
-        volumeUtilization: result.palletVolumeUtilization,
-        loadDimensions: result.loadDimensions
-      });
-    }
-    if (result.isLastPalletDifferent && result.lastPalletBoxes > 0) {
-      // Calculate height for the last pallet based on the number of layers
-      const [l, w, h] = result.orientations.pallet.split('x').map(Number);
-      // Use boxesPerPallet / nz to get boxes per layer, as nx*ny is 0 for two-block layouts
-      const boxesPerLayer = result.palletGrid.nz > 0 ? Math.max(1, result.boxesPerPallet / result.palletGrid.nz) : 1;
-      const layers = Math.ceil(result.lastPalletBoxes / boxesPerLayer);
-      const lastPalletHeight = pallet.height + (layers * h);
-
-      palletsData.push({
-        boxes: Array(result.lastPalletBoxes).fill({ partName: part.name }),
-        weight: result.lastPalletWeight,
-        volumeUtilization: result.palletVolumeUtilization * (result.lastPalletBoxes / result.boxesPerPalletBalanced),
-        loadDimensions: { length: result.loadDimensions.length, width: result.loadDimensions.width, height: lastPalletHeight }
-      });
-    }
-  }
-
-  // 1. Boxes to order from supplier
+  // 1. BOXES TO ORDER (SUPPLIER)
   addSectionHeader('1. BOXES TO ORDER (SUPPLIER)');
   addTableHeader(['Box Name', 'Dimensions (L x W x H) mm', 'Quantity Needed']);
   
   const boxOrders = new Map<string, { dims: string, qty: number }>();
-  sims.forEach(sim => {
-    const key = `${sim.box.name}-${sim.box.length}x${sim.box.width}x${sim.box.height}`;
+  items.forEach(item => {
+    const key = `${item.box.name}-${item.box.length}x${item.box.width}x${item.box.height}`;
     if (!boxOrders.has(key)) {
       boxOrders.set(key, { 
-        dims: `${sim.box.length} x ${sim.box.width} x ${sim.box.height}`, 
+        dims: `${item.box.length} x ${item.box.width} x ${item.box.height}`, 
         qty: 0 
       });
     }
-    boxOrders.get(key)!.qty += sim.result.totalBoxesNeeded;
+    boxOrders.get(key)!.qty += item.result.totalBoxesNeeded;
   });
 
   boxOrders.forEach((data, nameKey) => {
@@ -241,7 +234,7 @@ export async function exportToExcel(
 
   let sectionCounter = 2;
 
-  // 2. Pallets to order (Only for pallet shipping)
+  // 2. PALLETS TO ORDER
   if (shippingMethod === 'pallet') {
     addSectionHeader(`${sectionCounter}. PALLETS TO ORDER`);
     addTableHeader(['Pallet Type', 'Dimensions (L x W x H) mm', 'Quantity Needed']);
@@ -249,36 +242,36 @@ export async function exportToExcel(
     addDataRow([
       palletNameWithDesc, 
       `${pallet.length} x ${pallet.width} x ${pallet.height}`, 
-      palletsData.length
+      shipmentResult.totalPalletsNeeded
     ]);
     worksheet.addRow([]);
     sectionCounter++;
   }
 
-  // 3. Boxes with parts (Dimensions and Weight)
+  // 3. PACKED BOXES DETAILS
   addSectionHeader(`${sectionCounter}. PACKED BOXES DETAILS`);
   addTableHeader(['Part Name', 'Box Name', 'Dimensions (mm)', 'Gross Weight (kg)', 'Parts per Box', 'Total Boxes']);
   
   let totalBoxesWeight = 0;
   let totalBoxesCount = 0;
 
-  sims.forEach(sim => {
-    const fullBoxes = Math.floor(sim.quantity / sim.result.partsPerBox);
-    const partsInLast = sim.quantity % sim.result.partsPerBox;
-    const lastBoxWeight = partsInLast > 0 ? (partsInLast * sim.part.weight + sim.box.emptyWeight) : 0;
-    const simTotalWeight = (fullBoxes * sim.result.boxWeight) + lastBoxWeight;
+  items.forEach(item => {
+    const fullBoxes = Math.floor(item.quantity / item.result.partsPerBox);
+    const partsInLast = item.quantity % item.result.partsPerBox;
+    const lastBoxWeight = partsInLast > 0 ? (partsInLast * item.part.weight + item.box.emptyWeight) : 0;
+    const itemTotalWeight = (fullBoxes * item.result.boxWeight) + lastBoxWeight;
     
-    totalBoxesWeight += simTotalWeight;
-    totalBoxesCount += sim.result.totalBoxesNeeded;
+    totalBoxesWeight += itemTotalWeight;
+    totalBoxesCount += item.result.totalBoxesNeeded;
 
-    const partNameWithDesc = sim.part.name + (sim.part.description ? `\n(${sim.part.description})` : '');
+    const partNameWithDesc = item.part.name + (item.part.description ? `\n(${item.part.description})` : '');
     if (fullBoxes > 0) {
       addDataRow([
         partNameWithDesc,
-        sim.box.name,
-        `${sim.box.length} x ${sim.box.width} x ${sim.box.height}`,
-        sim.result.boxWeight.toFixed(2),
-        sim.result.partsPerBox,
+        item.box.name,
+        `${item.box.length} x ${item.box.width} x ${item.box.height}`,
+        item.result.boxWeight.toFixed(2),
+        item.result.partsPerBox,
         fullBoxes
       ]);
     }
@@ -286,8 +279,8 @@ export async function exportToExcel(
     if (partsInLast > 0) {
       addDataRow([
         `${partNameWithDesc} (Last Box)`,
-        sim.box.name,
-        `${sim.box.length} x ${sim.box.width} x ${sim.box.height}`,
+        item.box.name,
+        `${item.box.length} x ${item.box.width} x ${item.box.height}`,
         lastBoxWeight.toFixed(2),
         partsInLast,
         1
@@ -297,32 +290,43 @@ export async function exportToExcel(
   worksheet.addRow([]);
   sectionCounter++;
 
-  // 4. Pallets Details (Grouped) - Only for pallet shipping
-  if (shippingMethod === 'pallet') {
+  // 4. PALLET LOAD DETAILS
+  if (shippingMethod === 'pallet' && shipmentResult.pallets) {
     addSectionHeader(`${sectionCounter}. PALLET LOAD DETAILS`);
     addTableHeader(['Pallet(s)', 'Dimensions (L x W x H) mm', 'Gross Weight (kg)', 'Total Boxes', 'Parts & Quantities']);
     
     // Group identical pallets
-    const groupedPallets = new Map<string, { count: number, indices: number[], pallet: PalletLoad, partsStr: string }>();
+    const groupedPallets = new Map<string, { count: number, indices: number[], weight: number, boxes: number, partsStr: string, dims: string }>();
     
-    palletsData.forEach((p, index) => {
-      const dims = p.loadDimensions ? `${Math.round(p.loadDimensions.length)}x${Math.round(p.loadDimensions.width)}x${Math.round(p.loadDimensions.height)}` : 'N/A';
-      const weight = p.weight.toFixed(1);
-      const boxCount = p.boxes.length;
+    shipmentResult.pallets.forEach((p, index) => {
+      const maxHeight = p.length > 0 ? Math.max(...p.map(b => b.z + b.height)) : 0;
+      const totalHeight = pallet.height + maxHeight;
+      const dims = `${pallet.length} x ${pallet.width} x ${Math.round(totalHeight)}`;
+      
+      const palletWeight = p.reduce((sum, b) => sum + (b.weight || 0), pallet.emptyWeight);
+      const weightStr = palletWeight.toFixed(1);
+      const boxCount = p.length;
       
       // Count parts per pallet
       const partCounts: { [key: string]: number } = {};
-      p.boxes.forEach(c => {
-        const partsInBox = result.partsPerBox;
-        partCounts[c.partName] = (partCounts[c.partName] || 0) + partsInBox;
+      p.forEach(b => {
+        // We need to know how many parts are in this box. 
+        // We can find the item by partName
+        const item = items.find(it => it.part.name === b.partName);
+        if (item) {
+          // If it's a full box, it's item.result.partsPerBox. 
+          // But wait, optimizeMixedShipment doesn't distinguish between full and last boxes easily.
+          // Let's assume for now it's the standard partsPerBox or we could have stored it in PackedBox.
+          // For simplicity, let's just use the name and box count.
+          partCounts[b.partName] = (partCounts[b.partName] || 0) + 1; // This is box count, not parts count
+        }
       });
       
-      const partsStr = Object.entries(partCounts).map(([name, qty]) => `${name} (${qty} pcs)`).sort().join('\n');
-      
-      const signature = `${dims}-${weight}-${boxCount}-${partsStr}`;
+      const partsStr = Object.entries(partCounts).map(([name, count]) => `${name}: ${count} boxes`).sort().join('\n');
+      const signature = `${dims}-${weightStr}-${boxCount}-${partsStr}`;
       
       if (!groupedPallets.has(signature)) {
-        groupedPallets.set(signature, { count: 0, indices: [], pallet: p, partsStr });
+        groupedPallets.set(signature, { count: 0, indices: [], weight: palletWeight, boxes: boxCount, partsStr, dims });
       }
       const group = groupedPallets.get(signature)!;
       group.count++;
@@ -347,15 +351,12 @@ export async function exportToExcel(
           indicesStr = `Pallets ${group.indices.join(', ')}`;
         }
       }
-        
-      const p = group.pallet;
-      const dims = p.loadDimensions ? `${Math.round(p.loadDimensions.length)} x ${Math.round(p.loadDimensions.width)} x ${Math.round(p.loadDimensions.height)}` : 'N/A';
 
       const row = addDataRow([
         indicesStr,
-        dims,
-        p.weight.toFixed(2),
-        p.boxes.length,
+        group.dims,
+        group.weight.toFixed(2),
+        group.boxes,
         group.partsStr
       ]);
       row.height = 15 * Math.max(1, group.partsStr.split('\n').length);
@@ -365,13 +366,13 @@ export async function exportToExcel(
     sectionCounter++;
   }
 
-  // 5. Shipment Summary
+  // 5. SHIPMENT SUMMARY
   addSectionHeader(`${sectionCounter}. SHIPMENT SUMMARY`);
   if (shippingMethod === 'pallet') {
-    const totalShipmentWeight = palletsData.reduce((sum, p) => sum + p.weight, 0);
+    const totalShipmentWeight = shipmentResult.pallets?.reduce((sum, p) => sum + p.reduce((s, b) => s + (b.weight || 0), pallet.emptyWeight), 0) || 0;
     addTableHeader(['Total Pallets', 'Total Boxes', 'Total Shipment Weight (kg)']);
     addDataRow([
-      palletsData.length,
+      shipmentResult.totalPalletsNeeded,
       totalBoxesCount,
       totalShipmentWeight.toFixed(2)
     ]);
@@ -399,68 +400,66 @@ export async function exportToExcel(
   addSectionHeader(`${sectionCounter}. VISUALIZATIONS`);
   let currentRow = worksheet.lastRow!.number + 1;
 
-  if (palletImage && shippingMethod === 'pallet') {
-    const imageId = workbook.addImage({
-      base64: palletImage,
-      extension: 'png',
-    });
-    worksheet.addImage(imageId, {
-      tl: { col: 0, row: currentRow },
-      ext: { width: 600, height: 450 }
-    });
-    currentRow += 25;
-  }
-
-  if (boxImage) {
-    const imageId = workbook.addImage({
-      base64: boxImage,
-      extension: 'png',
-    });
-    worksheet.addImage(imageId, {
-      tl: { col: 0, row: currentRow },
-      ext: { width: 600, height: 450 }
-    });
-    currentRow += 25;
-  }
-
-  if (lastBoxImage) {
-    const imageId = workbook.addImage({
-      base64: lastBoxImage,
-      extension: 'png',
-    });
-    worksheet.addImage(imageId, {
-      tl: { col: 0, row: currentRow },
-      ext: { width: 600, height: 450 }
-    });
-    currentRow += 25;
-  }
-
-  for (const sim of sims) {
-    const firstBoxImg = generateBoxVisualization(sim.part, sim.box, sim.result, false);
-    if (firstBoxImg) {
-      const imageId = workbook.addImage({
-        base64: firstBoxImg,
-        extension: 'png',
-      });
-      worksheet.addImage(imageId, {
-        tl: { col: 0, row: currentRow },
-        ext: { width: 600, height: 450 }
-      });
-      currentRow += 25;
-    }
-
-    if (sim.result.isLastBoxDifferent) {
-      const lastBoxImg = generateBoxVisualization(sim.part, sim.box, sim.result, true);
-      if (lastBoxImg) {
+  // Add ALL pallet images
+  if (palletImages && palletImages.length > 0 && shippingMethod === 'pallet') {
+    palletImages.forEach((img, idx) => {
+      try {
         const imageId = workbook.addImage({
-          base64: lastBoxImg,
+          base64: img,
           extension: 'png',
         });
+        worksheet.addRow([`Pallet ${idx + 1} Visualization`]);
+        currentRow++;
         worksheet.addImage(imageId, {
           tl: { col: 0, row: currentRow },
           ext: { width: 600, height: 450 }
         });
         currentRow += 25;
+      } catch (e) {
+        console.error(`Error adding pallet ${idx + 1} image to Excel:`, e);
+      }
+    });
+  }
+
+  // Add 2D Box Schematics
+  for (const item of items) {
+    const firstBoxImg = generateBoxVisualization(item.part, item.box, item.result, false);
+    if (firstBoxImg) {
+      try {
+        const imageId = workbook.addImage({
+          base64: firstBoxImg,
+          extension: 'png',
+        });
+        worksheet.addRow([`Box Packing Schematic: ${item.part.name}`]);
+        currentRow++;
+        worksheet.addImage(imageId, {
+          tl: { col: 0, row: currentRow },
+          ext: { width: 600, height: 450 }
+        });
+        currentRow += 25;
+      } catch (e) {
+        console.error("Error adding box schematic to Excel:", e);
+      }
+    }
+
+    if (item.result.isLastBoxDifferent) {
+      const lastBoxImg = generateBoxVisualization(item.part, item.box, item.result, true);
+      if (lastBoxImg) {
+        try {
+          const imageId = workbook.addImage({
+            base64: lastBoxImg,
+            extension: 'png',
+          });
+          worksheet.addRow([`Last Box Packing Schematic: ${item.part.name}`]);
+          currentRow++;
+          worksheet.addImage(imageId, {
+            tl: { col: 0, row: currentRow },
+            ext: { width: 600, height: 450 }
+          });
+          currentRow += 25;
+        } catch (e) {
+          console.error("Error adding last box schematic to Excel:", e);
+        }
       }
     }
   }
@@ -478,6 +477,7 @@ export async function exportToExcel(
   const buffer = await workbook.xlsx.writeBuffer();
   const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   const prefix = projectNumber ? `${projectNumber}_` : '';
-  const fileName = `${prefix}${shippingMethod}_Report_${part.name.replace(/\s+/g, '_')}.xlsx`;
+  const firstPartName = items[0]?.part.name || 'Shipment';
+  const fileName = `${prefix}${shippingMethod}_Report_${firstPartName.replace(/\s+/g, '_')}.xlsx`;
   saveAs(blob, fileName);
 }

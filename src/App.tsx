@@ -22,27 +22,32 @@ import {
   LayoutGrid,
   Plus,
   Trash2,
+  Edit2,
   Check,
   Sparkles,
   Cpu,
   Archive,
   Palette,
-  Settings
+  Settings,
+  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
-import { OrbitControls, PerspectiveCamera, Edges, Center, Environment, ContactShadows, Bounds, useBounds, Text } from '@react-three/drei';
+import { OrbitControls, PerspectiveCamera, Edges, Center, Environment, ContactShadows, Bounds, useBounds, Text, Html } from '@react-three/drei';
 import * as THREE from 'three';
 import gsap from 'gsap';
-import { Part, Container, Pallet, PackingResult, PackedBox, PalletLoad } from './types';
+import ExcelJS from 'exceljs';
+import { saveAs } from 'file-saver';
+import { Part, Container, Pallet, PackingResult, PackedBox, PalletLoad, ShipmentItem } from './types';
 import { GeneralSummary } from './components/GeneralSummary';
-import { optimizePacking, suggestBestBox } from './utils/packing';
-import { exportToExcel } from './utils/export';
+import { optimizePacking, suggestBestBox, optimizeMixedShipment } from './utils/packing';
+import { exportToExcel, downloadImportTemplate } from './utils/export';
 import { sendEmailReport } from './utils/email';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { GoogleGenAI } from '@google/genai';
-import { getOptimalBoxSuggestion, type AISuggestion } from './services/geminiService';
+import { getOptimalBoxSuggestion, optimizePalletizationWithAI, analyzePalletizationInsights, type AISuggestion } from './services/geminiService';
+import { LibrarySelector } from './components/LibrarySelector';
 
 function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -56,13 +61,12 @@ const STANDARD_PALLETS: Pallet[] = [
 ];
 
 const INITIAL_PARTS: Part[] = [
-  { id: 'p1', name: 'Engine Component A', description: 'High-precision engine part', length: 120, width: 80, height: 60, weight: 1.2, orderQuantity: 1000 },
-  { id: 'p2', name: 'Brake Pad Set', description: 'Standard automotive brake pads', length: 200, width: 150, height: 50, weight: 2.5, orderQuantity: 500 },
+  { id: 'p1', name: 'New Part', description: 'Enter part description...', length: 100, width: 100, height: 100, weight: 1.0, orderQuantity: 100, createdAt: Date.now() },
 ];
 
 const INITIAL_BOXS: Container[] = [
-  { id: 'c1', name: 'Master Box K3', length: 600, width: 400, height: 400, maxWeight: 25, emptyWeight: 0.8 },
-  { id: 'c2', name: 'Large Box XL', length: 800, width: 600, height: 500, maxWeight: 40, emptyWeight: 1.5 },
+  { id: 'c1', name: 'Master Box K3', length: 600, width: 400, height: 400, maxWeight: 25, emptyWeight: 0.8, createdAt: Date.now() },
+  { id: 'c2', name: 'Large Box XL', length: 800, width: 600, height: 500, maxWeight: 40, emptyWeight: 1.5, createdAt: Date.now() - 1000 },
 ];
 
 interface Box3DProps {
@@ -88,9 +92,16 @@ interface MeshBoxProps {
   onClick?: () => void;
   isSelected?: boolean;
   isStable?: boolean;
+  tooltipData?: {
+    name: string;
+    partsCount?: number;
+    partName?: string;
+    weight?: number;
+  };
 }
 
-const MeshBox = ({ position, args, color, edgeColor, opacity = 1, onClick, isSelected, isStable = true }: MeshBoxProps) => {
+const MeshBox = ({ position, args, color, edgeColor, opacity = 1, onClick, isSelected, isStable = true, tooltipData }: MeshBoxProps) => {
+  const [hovered, setHovered] = useState(false);
   
   const finalColor = !isStable ? "#ef4444" : (isSelected ? "#fbbf24" : color);
   const finalEdgeColor = !isStable ? "#b91c1c" : (isSelected ? "#f59e0b" : edgeColor);
@@ -102,8 +113,16 @@ const MeshBox = ({ position, args, color, edgeColor, opacity = 1, onClick, isSel
           e.stopPropagation();
           onClick?.();
         }}
-        onPointerOver={() => (document.body.style.cursor = 'pointer')}
-        onPointerOut={() => (document.body.style.cursor = 'auto')}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          document.body.style.cursor = 'pointer';
+          setHovered(true);
+        }}
+        onPointerOut={(e) => {
+          e.stopPropagation();
+          document.body.style.cursor = 'auto';
+          setHovered(false);
+        }}
       >
         <boxGeometry args={args} />
         <meshStandardMaterial 
@@ -115,6 +134,16 @@ const MeshBox = ({ position, args, color, edgeColor, opacity = 1, onClick, isSel
         />
         <Edges color={finalEdgeColor} threshold={15} />
       </mesh>
+      {hovered && tooltipData && (
+        <Html distanceFactor={10} position={[0, args[1]/2 + 0.1, 0]} center zIndexRange={[100, 0]}>
+          <div className="bg-zinc-900 text-white text-[10px] px-2 py-1.5 rounded shadow-lg whitespace-nowrap pointer-events-none flex flex-col gap-0.5">
+            <div className="font-bold text-amber-400">{tooltipData.name}</div>
+            {tooltipData.partName && <div>Part: {tooltipData.partName}</div>}
+            {tooltipData.partsCount !== undefined && <div>Qty: {tooltipData.partsCount} pcs</div>}
+            {tooltipData.weight !== undefined && <div>Weight: {tooltipData.weight.toFixed(2)} kg</div>}
+          </div>
+        </Html>
+      )}
     </group>
   );
 };
@@ -334,15 +363,18 @@ const PackingCanvas = React.memo(({
                   const palletsPerRow = Math.ceil(Math.sqrt(result.totalPalletsNeeded));
                   const spacing = 400 * scale;
                   
-                  return Array.from({ length: result.totalPalletsNeeded }).map((_, palletIdx) => {
-                    const row = Math.floor(palletIdx / palletsPerRow);
-                    const col = palletIdx % palletsPerRow;
-                    const offsetX = col * (pallet.length * scale + spacing);
-                    const offsetZ = row * (pallet.width * scale + spacing);
+                  return Array.from({ length: result.totalPalletsNeeded })
+                    .map((_, idx) => idx)
+                    .filter(idx => selectedPalletIndex === null || selectedPalletIndex === idx)
+                    .map((palletIdx, renderIdx) => {
+                      const row = selectedPalletIndex === null ? Math.floor(palletIdx / palletsPerRow) : 0;
+                      const col = selectedPalletIndex === null ? palletIdx % palletsPerRow : 0;
+                      const offsetX = col * (pallet.length * scale + spacing);
+                      const offsetZ = row * (pallet.width * scale + spacing);
                     
                     const isLast = palletIdx === result.totalPalletsNeeded - 1;
                     const countOnThisPallet = isLast ? result.lastPalletBoxes : result.boxesPerPalletBalanced;
-                    const boxesToRender = result.boxes?.slice(0, countOnThisPallet) || [];
+                    const boxesToRender = result.pallets ? result.pallets[palletIdx] : (result.boxes?.slice(0, countOnThisPallet) || []);
 
                     return (
                       <group key={palletIdx} position={[offsetX, 0, offsetZ]}>
@@ -360,6 +392,12 @@ const PackingCanvas = React.memo(({
                                 onClick={() => setSelectedId(globalId)}
                                 isSelected={selectedId === globalId}
                                 isStable={result.isStable}
+                                tooltipData={{
+                                  name: `${c.length}x${c.width}x${c.height} mm`,
+                                  partName: c.partName,
+                                  partsCount: c.partsCount,
+                                  weight: c.weight
+                                }}
                               />
                             );
                           })}
@@ -522,7 +560,6 @@ const PackingCanvas = React.memo(({
         />
         
         <Environment preset="city" />
-        <gridHelper args={[60, 60, '#f1f5f9', '#f8fafc']} position={[0, -0.01, 0]} />
       </Canvas>
 
       {/* Selection Overlay */}
@@ -543,39 +580,75 @@ const PackingCanvas = React.memo(({
               </button>
             </div>
             <div className="space-y-1 text-xs">
-              <div className="flex justify-between">
-                <span className="text-zinc-500">Position:</span>
-                <span className="font-mono text-zinc-700">
-                  {(() => {
-                    const nx = viewMode === 'pallet' ? result.palletGrid.nx : result.boxGrid.nx;
-                    const ny = viewMode === 'pallet' ? result.palletGrid.ny : result.boxGrid.ny;
-                    
-                    let id = 0;
-                    if (typeof selectedId === 'string' && selectedId.includes('-c')) {
-                      id = parseInt(selectedId.split('-c')[1]);
-                    } else {
-                      id = Number(selectedId);
-                    }
+              {(() => {
+                let clickedBox: PackedBox | undefined;
+                if (viewMode === 'pallet' && typeof selectedId === 'string') {
+                  const [pIdxStr, cIdxStr] = selectedId.split('-');
+                  const pIdx = parseInt(pIdxStr.replace('p', ''));
+                  const cIdx = parseInt(cIdxStr.replace('c', ''));
+                  if (result.pallets && result.pallets[pIdx]) {
+                    clickedBox = result.pallets[pIdx][cIdx];
+                  }
+                }
 
-                    const x = (id % nx) + 1;
-                    const y = (Math.floor(id / nx) % ny) + 1;
-                    const z = Math.floor(id / (nx * ny)) + 1;
-                    return `X:${x} Y:${y} Z:${z}`;
-                  })()}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-zinc-500">Type:</span>
-                <span className="font-medium text-zinc-700">
-                  {viewMode === 'pallet' ? box.name : part.name}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-zinc-500">Dimensions:</span>
-                <span className="font-medium text-zinc-700">
-                  {viewMode === 'pallet' ? result.orientations.pallet : result.orientations.box} mm
-                </span>
-              </div>
+                return (
+                  <>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Position:</span>
+                      <span className="font-mono text-zinc-700">
+                        {(() => {
+                          const nx = viewMode === 'pallet' ? result.palletGrid.nx : result.boxGrid.nx;
+                          const ny = viewMode === 'pallet' ? result.palletGrid.ny : result.boxGrid.ny;
+                          
+                          let id = 0;
+                          if (typeof selectedId === 'string' && selectedId.includes('-c')) {
+                            id = parseInt(selectedId.split('-c')[1]);
+                          } else {
+                            id = Number(selectedId);
+                          }
+
+                          const x = (id % nx) + 1;
+                          const y = (Math.floor(id / nx) % ny) + 1;
+                          const z = Math.floor(id / (nx * ny)) + 1;
+                          return `X:${x} Y:${y} Z:${z}`;
+                        })()}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Type:</span>
+                      <span className="font-medium text-zinc-700">
+                        {clickedBox ? clickedBox.name : (viewMode === 'pallet' ? box.name : part.name)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-500">Dimensions:</span>
+                      <span className="font-medium text-zinc-700">
+                        {clickedBox ? `${clickedBox.length}x${clickedBox.width}x${clickedBox.height}` : (viewMode === 'pallet' ? result.orientations.pallet : result.orientations.box)} mm
+                      </span>
+                    </div>
+                    {clickedBox && (
+                      <>
+                        <div className="flex justify-between">
+                          <span className="text-zinc-500">Part inside:</span>
+                          <span className="font-medium text-zinc-700">{clickedBox.partName}</span>
+                        </div>
+                        {clickedBox.partsCount !== undefined && (
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500">Quantity:</span>
+                            <span className="font-medium text-zinc-700">{clickedBox.partsCount} pcs</span>
+                          </div>
+                        )}
+                        {clickedBox.weight !== undefined && (
+                          <div className="flex justify-between">
+                            <span className="text-zinc-500">Weight:</span>
+                            <span className="font-medium text-zinc-700">{clickedBox.weight.toFixed(2)} kg</span>
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </>
+                );
+              })()}
             </div>
           </motion.div>
         )}
@@ -594,14 +667,99 @@ export default function App() {
   const [shippingMethod, setShippingMethod] = useState<'pallet' | 'courier'>('pallet');
   const [calculationMode, setCalculationMode] = useState<'full' | 'boxes-only'>('full');
   const [selectedPalletIndex, setSelectedPalletIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    setSelectedPalletIndex(null);
+  }, [viewMode]);
+
   const [isOptimizing, setIsOptimizing] = useState(false);
   const [projectNumber, setProjectNumber] = useState('');
   const [deliveryAddress, setDeliveryAddress] = useState('');
+  const [shipmentItems, setShipmentItems] = useState<ShipmentItem[]>([]);
+
+  const [editingItemId, setEditingItemId] = useState<string | null>(null);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = async (evt) => {
+      const buffer = evt.target?.result as ArrayBuffer;
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(buffer);
+      const worksheet = workbook.worksheets[0];
+      
+      const newParts: Part[] = [];
+      const newBoxes: Container[] = [];
+      const newShipmentItems: ShipmentItem[] = [];
+
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return; // Skip header
+        
+        const name = row.getCell(1).value?.toString() || `Part ${rowNumber}`;
+        const description = row.getCell(2).value?.toString() || '';
+        const length = Number(row.getCell(3).value) || 100;
+        const width = Number(row.getCell(4).value) || 100;
+        const height = Number(row.getCell(5).value) || 100;
+        const weight = Number(row.getCell(6).value) || 1;
+        const quantity = Number(row.getCell(7).value) || 1;
+        const targetBoxCount = Number(row.getCell(8).value) || undefined;
+        const fixedPartsPerBox = Number(row.getCell(9).value) || undefined;
+
+        const part: Part = {
+          id: Math.random().toString(36).substr(2, 9),
+          name, description, length, width, height, weight, orderQuantity: quantity,
+          targetBoxCount, fixedPartsPerBox, createdAt: Date.now()
+        };
+
+        // Auto-suggest box targeting 85% fill rate
+        const suggestedBox = suggestBestBox(part, pallet);
+        
+        newParts.push(part);
+        newBoxes.push(suggestedBox);
+        newShipmentItems.push({
+          id: Math.random().toString(36).substr(2, 9),
+          partId: part.id,
+          boxId: suggestedBox.id,
+          quantity: part.orderQuantity
+        });
+      });
+
+      setParts(prev => [...prev, ...newParts]);
+      setBoxes(prev => [...prev, ...newBoxes]);
+      setShipmentItems(prev => [...prev, ...newShipmentItems]);
+      
+      if (newParts.length > 0) {
+        setSelectedPartId(newParts[0].id);
+        setSelectedBoxId(newBoxes[0].id);
+      }
+      
+      // Reset file input
+      e.target.value = '';
+    };
+    reader.readAsArrayBuffer(file);
+  };
 
   const part = useMemo(() => parts.find(p => p.id === selectedPartId) || parts[0], [parts, selectedPartId]);
   const box = useMemo(() => boxes.find(c => c.id === selectedBoxId) || boxes[0], [boxes, selectedBoxId]);
 
-  const result = useMemo(() => optimizePacking(part, box, pallet, part.orderQuantity), [part, box, pallet, part.orderQuantity]);
+  const currentSingleResult = useMemo(() => optimizePacking(part, box, pallet, part.orderQuantity), [part, box, pallet, part.orderQuantity]);
+
+  const result = useMemo(() => {
+    if (shipmentItems.length > 0) {
+      const items = shipmentItems.map(item => ({
+        part: parts.find(p => p.id === item.partId)!,
+        box: boxes.find(b => b.id === item.boxId)!,
+        quantity: item.quantity
+      })).filter(item => item.part && item.box);
+      
+      if (items.length > 0) {
+        return optimizeMixedShipment(items, pallet);
+      }
+    }
+    return currentSingleResult;
+  }, [currentSingleResult, shipmentItems, parts, boxes, pallet]);
 
   const handlePartChange = (updates: Partial<Part>) => {
     const newParts = parts.map(p => p.id === selectedPartId ? { ...p, ...updates } : p);
@@ -628,7 +786,11 @@ export default function App() {
     setIsOptimizing(true);
     try {
       setExportType(type);
-      setExportStep('pallet');
+      if (type === 'email') {
+        setExportStep('final');
+      } else {
+        setExportStep('pallet');
+      }
     } catch (error) {
       console.error('Export failed:', error);
     } finally {
@@ -636,15 +798,16 @@ export default function App() {
     }
   };
 
-  const [exportStep, setExportStep] = useState<'idle' | 'pallet' | 'lastPallet' | 'box' | 'lastBox' | 'final'>('idle');
+  const [exportStep, setExportStep] = useState<'idle' | 'pallet' | 'box' | 'lastBox' | 'final'>('idle');
   const [exportType, setExportType] = useState<'excel' | 'email' | null>(null);
-  const [palletImage, setPalletImage] = useState<string | undefined>();
-  const [lastPalletImage, setLastPalletImage] = useState<string | undefined>();
-  const [boxImage, setBoxImage] = useState<string | undefined>();
-  const [lastBoxImage, setLastBoxImage] = useState<string | undefined>();
+  const [palletImages, setPalletImages] = useState<string[]>([]);
+  const [currentPalletCaptureIndex, setCurrentPalletCaptureIndex] = useState(0);
   const [aiInsights, setAiInsights] = useState<string | null>(null);
+  const [isAnalyzingInsights, setIsAnalyzingInsights] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSuggestingAI, setIsSuggestingAI] = useState(false);
+  const [isSuggestingBest, setIsSuggestingBest] = useState(false);
+  const [isOptimizingPallet, setIsOptimizingPallet] = useState(false);
 
   const handleAISuggestion = async () => {
     setIsSuggestingAI(true);
@@ -671,65 +834,115 @@ export default function App() {
     }
   };
 
-  const generateAIInsights = async () => {
-    if (!result) return;
-    
-    setIsAnalyzing(true);
-    setAiInsights(null);
-    
+  const handleSuggestBestBox = () => {
+    setIsSuggestingBest(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
-      
-      let promptData = '';
-      const totalShipmentWeight = ((result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded) * result.balancedPalletWeight + (result.isLastPalletDifferent ? result.lastPalletWeight : 0)).toFixed(1);
-      promptData = `
-        Part: ${part.name} (${part.length}x${part.width}x${part.height}mm, ${part.weight}kg)
-        Box: ${box.name} (${box.length}x${box.width}x${box.height}mm)
-        Parts per Box: ${result.partsPerBox}
-        Box Volume Utilization: ${(result.boxVolumeUtilization * 100).toFixed(1)}%
-        Total Pallets Needed: ${result.totalPalletsNeeded}
-        Boxes per Full Pallet: ${result.boxesPerPallet}
-        Total Shipment Weight: ${totalShipmentWeight} kg
-        Pallet Volume Utilization: ${(result.palletVolumeUtilization * 100).toFixed(1)}%
-      `;
-
-      const prompt = `You are an expert logistics and supply chain AI assistant for DIAM Palletizer.
-      Please analyze the following palletization and packing data and provide a short, professional summary (max 3-4 sentences).
-      Highlight any efficiencies, potential cost savings, or optimization tips.
-      
-      Data:
-      ${promptData}
-      `;
-
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: prompt,
-      });
-
-      setAiInsights(response.text || "No insights generated.");
+      const bestBox = suggestBestBox(part, pallet, shippingMethod);
+      const newBox: Container = {
+        ...bestBox,
+        id: Math.random().toString(36).substr(2, 9),
+        createdAt: Date.now()
+      };
+      setBoxes([...boxes, newBox]);
+      setSelectedBoxId(newBox.id);
     } catch (error) {
-      console.error("AI Analysis failed:", error);
-      setAiInsights("Failed to generate AI insights. Please try again later.");
+      console.error("Error suggesting best box:", error);
     } finally {
-      setIsAnalyzing(false);
+      setIsSuggestingBest(false);
+    }
+  };
+
+  const handleAIOptimizePalletization = async () => {
+    if (shipmentItems.length === 0) return;
+    setIsOptimizingPallet(true);
+    try {
+      const result = await optimizePalletizationWithAI(shipmentItems, parts, boxes, pallet, aiInsights);
+      if (result.suggestedBoxChanges && result.suggestedBoxChanges.length > 0) {
+        let updatedBoxes = [...boxes];
+        let updatedShipmentItems = [...shipmentItems];
+
+        for (const change of result.suggestedBoxChanges) {
+          const newBox: Container = {
+            id: Math.random().toString(36).substr(2, 9),
+            name: change.newBox.name || 'AI Optimized Box',
+            length: change.newBox.length || 600,
+            width: change.newBox.width || 400,
+            height: change.newBox.height || 300,
+            maxWeight: 25,
+            emptyWeight: 0.5,
+            createdAt: Date.now()
+          };
+          updatedBoxes.push(newBox);
+          updatedShipmentItems = updatedShipmentItems.map(item => 
+            item.partId === change.partId ? { ...item, boxId: newBox.id } : item
+          );
+        }
+        setBoxes(updatedBoxes);
+        setShipmentItems(updatedShipmentItems);
+        setAiInsights(result.explanation);
+      } else {
+        setAiInsights(result.explanation || "AI uważa, że obecne ustawienia są optymalne.");
+      }
+    } catch (error) {
+      console.error("Error optimizing palletization with AI:", error);
+    } finally {
+      setIsOptimizingPallet(false);
+    }
+  };
+
+  const handleAnalyzeInsights = async () => {
+    setIsAnalyzingInsights(true);
+    try {
+      const insights = await analyzePalletizationInsights(result, pallet, shipmentItems, parts, boxes);
+      setAiInsights(insights);
+    } catch (error) {
+      console.error('AI Insights failed:', error);
+    } finally {
+      setIsAnalyzingInsights(false);
     }
   };
 
   useEffect(() => {
-    if (exportStep === 'final' && palletImage && boxImage) {
+    if (exportStep === 'final') {
       if (exportType === 'excel') {
-        exportToExcel(part, box, pallet, result, part.orderQuantity, palletImage, boxImage, shippingMethod, projectNumber, lastBoxImage, lastPalletImage);
+        const itemsToExport = shipmentItems.length > 0 
+          ? shipmentItems.map(item => ({
+              part: parts.find(p => p.id === item.partId)!,
+              box: boxes.find(b => b.id === item.boxId)!,
+              quantity: item.quantity,
+              result: optimizePacking(
+                parts.find(p => p.id === item.partId)!,
+                boxes.find(b => b.id === item.boxId)!,
+                pallet,
+                item.quantity
+              )
+            })).filter(item => item.part && item.box)
+          : [{ part, box, quantity: part.orderQuantity, result: currentSingleResult }];
+
+        exportToExcel(itemsToExport, pallet, result, palletImages, shippingMethod, projectNumber);
       } else if (exportType === 'email') {
-        sendEmailReport(part, box, pallet, result, shippingMethod, projectNumber, deliveryAddress, palletImage, boxImage, lastBoxImage, lastPalletImage);
+        const itemsToExport = shipmentItems.length > 0 
+          ? shipmentItems.map(item => ({
+              part: parts.find(p => p.id === item.partId)!,
+              box: boxes.find(b => b.id === item.boxId)!,
+              quantity: item.quantity,
+              result: optimizePacking(
+                parts.find(p => p.id === item.partId)!,
+                boxes.find(b => b.id === item.boxId)!,
+                pallet,
+                item.quantity
+              )
+            })).filter(item => item.part && item.box)
+          : [{ part, box, quantity: part.orderQuantity, result: currentSingleResult }];
+
+        sendEmailReport(itemsToExport, pallet, result, shippingMethod, projectNumber, deliveryAddress, palletImages[0]);
       }
       setExportStep('idle');
       setExportType(null);
-      setPalletImage(undefined);
-      setLastPalletImage(undefined);
-      setBoxImage(undefined);
-      setLastBoxImage(undefined);
+      setPalletImages([]);
+      setCurrentPalletCaptureIndex(0);
     }
-  }, [exportStep, exportType, palletImage, lastPalletImage, boxImage, lastBoxImage, part, box, pallet, result, shippingMethod, projectNumber, deliveryAddress]);
+  }, [exportStep, exportType, palletImages, part, box, pallet, result, shippingMethod, projectNumber, deliveryAddress, shipmentItems, parts, boxes, currentSingleResult]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -761,6 +974,50 @@ export default function App() {
     setSelectedPartId(INITIAL_PARTS[0].id);
     setSelectedBoxId(INITIAL_BOXS[0].id);
     setPallet(STANDARD_PALLETS[0]);
+    setShipmentItems([]);
+    setProjectNumber('');
+    setDeliveryAddress('');
+  };
+
+  const saveProject = () => {
+    const projectData = {
+      parts,
+      boxes,
+      pallet,
+      shipmentItems,
+      projectNumber,
+      deliveryAddress
+    };
+    const blob = new Blob([JSON.stringify(projectData, null, 2)], { type: 'application/json' });
+    saveAs(blob, `DIAM_Project_${projectNumber || 'Export'}.json`);
+  };
+
+  const loadProject = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (evt) => {
+      try {
+        const data = JSON.parse(evt.target?.result as string);
+        if (data.parts && data.boxes && data.pallet) {
+          setParts(data.parts);
+          setBoxes(data.boxes);
+          setPallet(data.pallet);
+          setShipmentItems(data.shipmentItems || []);
+          setProjectNumber(data.projectNumber || '');
+          setDeliveryAddress(data.deliveryAddress || '');
+          if (data.parts.length > 0) setSelectedPartId(data.parts[0].id);
+          if (data.boxes.length > 0) setSelectedBoxId(data.boxes[0].id);
+        } else {
+          alert('Invalid project file format.');
+        }
+      } catch (err) {
+        alert('Error parsing project file.');
+      }
+      e.target.value = '';
+    };
+    reader.readAsText(file);
   };
 
   const addPart = () => {
@@ -772,7 +1029,8 @@ export default function App() {
       width: 100,
       height: 100,
       weight: 1.0,
-      orderQuantity: 100
+      orderQuantity: 100,
+      createdAt: Date.now()
     };
     setParts([...parts, newPart]);
     setSelectedPartId(newPart.id);
@@ -786,10 +1044,45 @@ export default function App() {
       width: 400,
       height: 300,
       maxWeight: 20,
-      emptyWeight: 0.5
+      emptyWeight: 0.5,
+      createdAt: Date.now()
     };
     setBoxes([...boxes, newBox]);
     setSelectedBoxId(newBox.id);
+  };
+
+  const addToShipment = () => {
+    if (editingItemId) {
+      setShipmentItems(prev => prev.map(item => 
+        item.id === editingItemId 
+          ? { ...item, partId: selectedPartId, boxId: selectedBoxId, quantity: part.orderQuantity }
+          : item
+      ));
+      setEditingItemId(null);
+    } else {
+      const newItem: ShipmentItem = {
+        id: Math.random().toString(36).substr(2, 9),
+        partId: selectedPartId,
+        boxId: selectedBoxId,
+        quantity: part.orderQuantity
+      };
+      setShipmentItems([...shipmentItems, newItem]);
+    }
+  };
+
+  const editShipmentItem = (item: ShipmentItem) => {
+    setSelectedPartId(item.partId);
+    setSelectedBoxId(item.boxId);
+    setEditingItemId(item.id);
+    
+    // Update the part's order quantity to match the item
+    const newParts = parts.map(p => p.id === item.partId ? { ...p, orderQuantity: item.quantity } : p);
+    setParts(newParts);
+  };
+
+  const removeFromShipment = (id: string) => {
+    setShipmentItems(shipmentItems.filter(item => item.id !== id));
+    if (editingItemId === id) setEditingItemId(null);
   };
 
   const deletePart = (id: string) => {
@@ -807,103 +1100,118 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-zinc-100/50">
+    <div className="min-h-screen flex flex-col bg-[radial-gradient(ellipse_at_top_right,_var(--tw-gradient-stops))] from-blue-100/40 via-zinc-100 to-orange-100/40">
       {/* Header */}
-      <header className="h-20 bg-white/80 text-zinc-900 flex items-center px-8 sticky top-0 z-50 border-b border-zinc-200 shadow-sm backdrop-blur-xl">
-        <div className="flex items-center gap-4">
+      <header className="h-16 bg-white/80 text-zinc-900 flex items-center px-6 sticky top-0 z-50 border-b border-zinc-200 shadow-sm backdrop-blur-xl">
+        <div className="flex items-center gap-3">
           <div className="relative">
-            <div className="absolute -inset-1 bg-gradient-to-r from-zinc-900 to-zinc-600 rounded-xl blur opacity-10 group-hover:opacity-20 transition duration-1000 group-hover:duration-200"></div>
-            <svg width="42" height="42" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="relative">
+            <div className="absolute -inset-1 bg-gradient-to-r from-zinc-900 to-zinc-600 rounded-lg blur opacity-10 group-hover:opacity-20 transition duration-1000 group-hover:duration-200"></div>
+            <svg width="32" height="32" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" className="relative">
               <path d="M 5 15 L 95 35 L 30 95 L 5 15 Z" fill="black" />
               <path d="M 5 15 Q 45 35 50 45" stroke="white" strokeWidth="4" fill="none" strokeLinecap="round" />
               <path d="M 95 35 Q 55 40 50 45" stroke="white" strokeWidth="4" fill="none" strokeLinecap="round" />
               <path d="M 30 95 Q 40 65 50 45" stroke="white" strokeWidth="4" fill="none" strokeLinecap="round" />
             </svg>
           </div>
-          <div>
-            <h1 className="font-inter font-thin text-2xl tracking-[0.2em] text-zinc-900 leading-none">DIAM</h1>
-            <p className="text-[10px] font-black text-zinc-400 tracking-widest uppercase mt-1">Palletizer</p>
+          <div className="flex flex-col justify-center">
+            <h1 className="font-inter font-thin text-[32px] tracking-[0.2em] text-zinc-900 leading-none">DIAM</h1>
           </div>
         </div>
 
-        <div className="ml-auto flex items-center gap-3">
+        <div className="ml-auto flex items-center gap-2">
+          <button 
+            onClick={saveProject}
+            className="text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 text-xs font-semibold"
+            title="Save Project"
+          >
+            <Download size={14} className="tilted-icon-container" />
+            Save
+          </button>
+          <label 
+            className="cursor-pointer text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 text-xs font-semibold"
+            title="Load Project"
+          >
+            <input type="file" accept=".json" className="hidden" onChange={loadProject} />
+            <ArrowUpRight size={14} className="tilted-icon-container" />
+            Load
+          </label>
           <button 
             onClick={handleReset}
-            className="text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 px-4 py-2 rounded-xl transition-all flex items-center gap-2 text-sm font-bold"
+            className="text-zinc-500 hover:text-zinc-900 hover:bg-zinc-100 px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 text-xs font-semibold"
           >
-            <RotateCcw size={16} className="text-zinc-400 tilted-icon-container" />
+            <RotateCcw size={14} className="text-zinc-400 tilted-icon-container" />
             Reset
           </button>
-          <div className="h-8 w-[1px] bg-zinc-200 mx-2"></div>
+          <div className="h-6 w-[1px] bg-zinc-200 mx-1"></div>
           <button 
             onClick={() => handleExport('excel')}
-            className="bg-white hover:bg-zinc-50 text-zinc-900 border-2 border-zinc-900 px-5 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-sm active:scale-95"
+            className="bg-white hover:bg-zinc-50 text-zinc-900 border border-zinc-200 px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
           >
-            <Download size={18} className="tilted-icon-container" />
+            <Download size={16} className="tilted-icon-container" />
             Excel Report
           </button>
           <button 
             onClick={() => handleExport('email')}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2.5 rounded-xl text-sm font-bold flex items-center gap-2 transition-all shadow-lg shadow-blue-200 active:scale-95"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-md shadow-blue-200 active:scale-95"
           >
-            <Mail size={18} className="tilted-icon-container" />
+            <Mail size={16} className="tilted-icon-container" />
             Send Email
           </button>
         </div>
       </header>
 
-      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 p-6 max-w-[1600px] mx-auto w-full">
+      <main className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 max-w-[1600px] mx-auto w-full">
         {/* Left Column: Inputs */}
-        <div className="lg:col-span-4 space-y-6">
+        <div className="lg:col-span-4 space-y-4">
           {/* Project & Shipping Settings */}
-          <section className="glass-panel p-6 bg-white border-zinc-200 shadow-xl shadow-zinc-200/30 rounded-[2.5rem]">
-            <div className="flex flex-col gap-6">
-              <div className="flex items-center gap-4 mb-2">
-                <div className="w-14 h-14 bg-zinc-900 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-zinc-200 tilted-icon-container">
-                  <Archive size={28} />
+          <section className="glass-panel p-4 bg-gradient-to-br from-white to-zinc-50/80">
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center gap-3 mb-1">
+                <div className="w-10 h-10 bg-zinc-900 text-white rounded-xl flex items-center justify-center shadow-md shadow-zinc-200 tilted-icon-container">
+                  <Archive size={20} />
                 </div>
                 <div>
-                  <h2 className="font-black text-2xl text-zinc-900 tracking-tight leading-none">Project Settings</h2>
-                  <p className="text-[10px] font-black text-zinc-400 uppercase tracking-[0.2em] mt-1">Identification & Method</p>
+                  <div className="text-[9px] font-bold text-zinc-400 uppercase tracking-[0.2em] mb-0.5">Step 1</div>
+                  <h2 className="font-bold text-lg text-zinc-900 tracking-tight leading-none">Project Settings</h2>
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-4">
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-black uppercase tracking-widest text-zinc-400 ml-1">Project Number</label>
+              <div className="grid grid-cols-1 gap-3">
+                <div className="space-y-1">
+                  <label className="label-text ml-1">Project Number</label>
                   <div className="relative group">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-400 group-focus-within:text-zinc-900 transition-colors">
-                      <Info size={16} />
+                      <Info size={14} />
                     </div>
                     <input
                       type="text"
                       value={projectNumber}
                       onChange={(e) => setProjectNumber(e.target.value)}
                       placeholder="e.g. PRJ-123"
-                      className="w-full pl-10 pr-4 py-3 bg-zinc-50 border-2 border-zinc-100 rounded-2xl text-sm font-bold focus:bg-white focus:border-zinc-900 focus:ring-0 transition-all outline-none shadow-sm"
+                      className="input-field !pl-10"
                     />
                   </div>
                 </div>
 
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-black uppercase tracking-widest text-zinc-400 ml-1">Delivery Address</label>
+                <div className="space-y-1">
+                  <label className="label-text ml-1">Delivery Address</label>
                   <div className="relative group">
                     <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-zinc-400 group-focus-within:text-zinc-900 transition-colors">
-                      <Truck size={16} />
+                      <Truck size={14} />
                     </div>
                     <input
                       type="text"
                       value={deliveryAddress}
                       onChange={(e) => setDeliveryAddress(e.target.value)}
                       placeholder="e.g. 123 Logistics Way, City"
-                      className="w-full pl-10 pr-4 py-3 bg-zinc-50 border-2 border-zinc-100 rounded-2xl text-sm font-bold focus:bg-white focus:border-zinc-900 focus:ring-0 transition-all outline-none shadow-sm"
+                      className="input-field !pl-10"
                     />
                   </div>
                 </div>
 
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-black uppercase tracking-widest text-zinc-400 ml-1">Shipping Method</label>
-                  <div className="grid grid-cols-2 gap-3 p-1.5 bg-zinc-100 rounded-2xl border border-zinc-200">
+                <div className="space-y-1">
+                  <label className="label-text ml-1">Shipping Method</label>
+                  <div className="grid grid-cols-2 gap-2 p-1 bg-zinc-100 rounded-xl border border-zinc-200 shadow-inner">
                     <button 
                       onClick={() => {
                         setShippingMethod('pallet');
@@ -911,13 +1219,13 @@ export default function App() {
                         setViewMode('pallet');
                       }}
                       className={cn(
-                        "flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-black transition-all",
+                        "flex items-center justify-center gap-2 py-2 rounded-lg text-[10px] font-bold transition-all",
                         shippingMethod === 'pallet' 
-                          ? "bg-white text-emerald-600 shadow-md scale-[1.02] border border-emerald-100" 
+                          ? "bg-white text-emerald-600 shadow-sm border border-emerald-100" 
                           : "text-zinc-500 hover:text-zinc-700 hover:bg-zinc-200/50"
                       )}
                     >
-                      <Layers size={16} />
+                      <Layers size={14} />
                       PALLET
                     </button>
                     <button 
@@ -927,13 +1235,13 @@ export default function App() {
                         setViewMode('box');
                       }}
                       className={cn(
-                        "flex items-center justify-center gap-2 py-3 rounded-xl text-xs font-black transition-all",
+                        "flex items-center justify-center gap-2 py-2 rounded-lg text-[10px] font-bold transition-all",
                         shippingMethod === 'courier' 
-                          ? "bg-white text-blue-600 shadow-md scale-[1.02] border border-blue-100" 
+                          ? "bg-white text-blue-600 shadow-sm border border-blue-100" 
                           : "text-zinc-500 hover:text-zinc-700 hover:bg-zinc-200/50"
                       )}
                     >
-                      <Truck size={16} />
+                      <Truck size={14} />
                       COURIER
                     </button>
                   </div>
@@ -943,64 +1251,52 @@ export default function App() {
           </section>
 
           {/* Part Library */}
-          <section className="glass-panel p-6 bg-blue-50/30 border-blue-100 shadow-xl shadow-blue-900/5 rounded-[2.5rem]">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-4">
-                <div className="w-14 h-14 bg-blue-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-blue-200 tilted-icon-container">
-                  <Package size={28} />
+          <section className="glass-panel p-4 bg-gradient-to-br from-blue-50/90 to-indigo-50/40">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-blue-600 text-white rounded-xl flex items-center justify-center shadow-md shadow-blue-200 tilted-icon-container">
+                  <Package size={20} />
                 </div>
                 <div>
-                  <h2 className="font-black text-2xl text-blue-900 tracking-tight leading-none">Part Library</h2>
-                  <p className="text-[10px] font-black text-blue-400 uppercase tracking-[0.2em] mt-1">Component Specifications</p>
+                  <div className="text-[9px] font-bold text-blue-400 uppercase tracking-[0.2em] mb-0.5">Step 2</div>
+                  <h2 className="font-bold text-lg text-blue-900 tracking-tight leading-none">Part Library</h2>
                 </div>
               </div>
-              <button 
-                onClick={addPart}
-                className="w-10 h-10 flex items-center justify-center bg-white hover:bg-blue-50 rounded-xl text-blue-600 transition-all shadow-sm border border-blue-100 active:scale-95"
-                title="Add New Part"
-              >
-                <Plus size={20} />
-              </button>
+              <div className="flex items-center gap-2">
+                <button 
+                  onClick={downloadImportTemplate}
+                  className="w-8 h-8 flex items-center justify-center bg-white hover:bg-blue-50 rounded-lg text-blue-600 transition-all shadow-sm border border-blue-100 active:scale-95"
+                  title="Download Excel Template"
+                >
+                  <Download size={14} />
+                </button>
+                <label className="w-8 h-8 flex items-center justify-center bg-white hover:bg-blue-50 rounded-lg text-blue-600 transition-all shadow-sm border border-blue-100 active:scale-95 cursor-pointer" title="Import from Excel">
+                  <input type="file" accept=".xlsx" className="hidden" onChange={handleFileUpload} />
+                  <ArrowUpRight size={14} />
+                </label>
+                <button 
+                  onClick={addPart}
+                  className="w-8 h-8 flex items-center justify-center bg-white hover:bg-blue-50 rounded-lg text-blue-600 transition-all shadow-sm border border-blue-100 active:scale-95"
+                  title="Add New Part"
+                >
+                  <Plus size={16} />
+                </button>
+              </div>
             </div>
             
-            <div className="space-y-3 mb-6 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
-              {parts.map(p => (
-                <div 
-                  key={p.id}
-                  className={cn(
-                    "group flex items-center justify-between p-2 rounded-lg border transition-all cursor-pointer",
-                    selectedPartId === p.id 
-                      ? "border-blue-500 bg-blue-50/50" 
-                      : "border-zinc-100 hover:border-zinc-200"
-                  )}
-                  onClick={() => setSelectedPartId(p.id)}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={cn(
-                      "w-4 h-4 rounded-full border flex items-center justify-center",
-                      selectedPartId === p.id ? "border-blue-500 bg-blue-500" : "border-zinc-300"
-                    )}>
-                      {selectedPartId === p.id && <Check size={10} className="text-white" />}
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="text-sm font-medium text-zinc-700">{p.name}</span>
-                      {p.description && (
-                        <span className="text-[10px] text-zinc-400 line-clamp-1">{p.description}</span>
-                      )}
-                    </div>
-                  </div>
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); deletePart(p.id); }}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 transition-all"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
+            <div className="flex items-center gap-2 mb-4">
+              <LibrarySelector
+                items={parts}
+                selectedId={selectedPartId}
+                onSelect={setSelectedPartId}
+                onDelete={deletePart}
+                itemType="part"
+                colorTheme="blue"
+              />
             </div>
 
-            <div className="space-y-4 pt-4 border-t border-zinc-100">
-              <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-3 pt-3 border-t border-zinc-100">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="label-text">Part Name</label>
                   <input 
@@ -1022,7 +1318,7 @@ export default function App() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-3 gap-2">
                 <div>
                   <label className="label-text">Length (mm)</label>
                   <NumberInput 
@@ -1054,19 +1350,19 @@ export default function App() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="label-text">Unit Weight (kg)</label>
                   <div className="relative">
                     <NumberInput 
                       value={part.weight} 
                       onChange={e => handlePartChange({ weight: Number(e.target.value) })}
-                      className="input-field pr-10"
+                      className="input-field pr-8"
                       min={0.01}
                       max={10000}
                     />
-                    <div className="absolute right-3 top-[19px] -translate-y-1/2 text-zinc-400">
-                      <Weight size={14} />
+                    <div className="absolute right-2.5 top-[17px] -translate-y-1/2 text-zinc-400">
+                      <Weight size={12} />
                     </div>
                   </div>
                 </div>
@@ -1081,7 +1377,7 @@ export default function App() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="label-text">Number of Boxes (Optional)</label>
                   <NumberInput 
@@ -1121,73 +1417,53 @@ export default function App() {
           </section>
 
           {/* Box Library */}
-          <section className="glass-panel p-6 bg-orange-50/30 border-orange-100 shadow-xl shadow-orange-900/5 rounded-[2.5rem]">
-            <div className="flex items-center justify-between mb-6">
-              <div className="flex items-center gap-4">
-                <div className="w-14 h-14 bg-orange-500 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-orange-200 tilted-icon-container">
-                  <Box size={28} />
+          <section className="glass-panel p-4 bg-gradient-to-br from-orange-50/90 to-amber-50/40">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-orange-600 text-white rounded-xl flex items-center justify-center shadow-md shadow-orange-200 tilted-icon-container">
+                  <Box size={20} />
                 </div>
                 <div>
-                  <h2 className="font-black text-2xl text-orange-900 tracking-tight leading-none">Box Library</h2>
-                  <p className="text-[10px] font-black text-orange-400 uppercase tracking-[0.2em] mt-1">Container Options</p>
+                  <div className="text-[9px] font-bold text-orange-400 uppercase tracking-[0.2em] mb-0.5">Step 3</div>
+                  <h2 className="font-bold text-lg text-orange-900 tracking-tight leading-none">Box Library</h2>
                 </div>
               </div>
               <div className="flex items-center gap-2">
                 <button 
-                  onClick={handleAISuggestion}
-                  disabled={isSuggestingAI}
-                  className="px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-700 hover:to-indigo-700 text-white text-xs font-black rounded-xl transition-all shadow-lg shadow-purple-200 flex items-center gap-2 disabled:opacity-70 active:scale-95"
-                  title="Use AI to suggest the optimal box dimensions"
+                  onClick={handleSuggestBestBox}
+                  disabled={isSuggestingBest}
+                  className="px-3 py-2 bg-white hover:bg-orange-50 text-orange-600 text-[10px] font-bold rounded-lg transition-all shadow-sm border border-orange-100 flex items-center gap-1.5 disabled:opacity-70 active:scale-95"
+                  title="Suggest the best box based on part dimensions"
                 >
-                  {isSuggestingAI ? (
-                    <RotateCcw size={16} className="animate-spin" />
+                  {isSuggestingBest ? (
+                    <RotateCcw size={14} className="animate-spin" />
                   ) : (
-                    <Sparkles size={16} />
+                    <Zap size={14} />
                   )}
-                  AI OPTIMIZE
+                  SUGGEST BEST
                 </button>
                 <button 
                   onClick={addBox}
-                  className="w-10 h-10 flex items-center justify-center bg-white hover:bg-orange-50 rounded-xl text-orange-600 transition-all shadow-sm border border-orange-100 active:scale-95"
+                  className="w-8 h-8 flex items-center justify-center bg-white hover:bg-orange-50 rounded-lg text-orange-500 transition-all shadow-sm border border-orange-100 active:scale-95"
                   title="Add New Box"
                 >
-                  <Plus size={20} />
+                  <Plus size={16} />
                 </button>
               </div>
             </div>
 
-            <div className="space-y-3 mb-6 max-h-[200px] overflow-y-auto pr-2 custom-scrollbar">
-              {boxes.map(c => (
-                <div 
-                  key={c.id}
-                  className={cn(
-                    "group flex items-center justify-between p-2 rounded-lg border transition-all cursor-pointer",
-                    selectedBoxId === c.id 
-                      ? "border-orange-500 bg-orange-50/50" 
-                      : "border-zinc-100 hover:border-zinc-200"
-                  )}
-                  onClick={() => setSelectedBoxId(c.id)}
-                >
-                  <div className="flex items-center gap-3">
-                    <div className={cn(
-                      "w-4 h-4 rounded-full border flex items-center justify-center",
-                      selectedBoxId === c.id ? "border-orange-500 bg-orange-500" : "border-zinc-300"
-                    )}>
-                      {selectedBoxId === c.id && <Check size={10} className="text-white" />}
-                    </div>
-                    <span className="text-sm font-medium text-zinc-700">{c.name}</span>
-                  </div>
-                  <button 
-                    onClick={(e) => { e.stopPropagation(); deleteBox(c.id); }}
-                    className="opacity-0 group-hover:opacity-100 p-1 text-zinc-400 hover:text-red-500 transition-all"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
+            <div className="flex items-center gap-2 mb-4">
+              <LibrarySelector
+                items={boxes}
+                selectedId={selectedBoxId}
+                onSelect={setSelectedBoxId}
+                onDelete={deleteBox}
+                itemType="box"
+                colorTheme="orange"
+              />
             </div>
 
-            <div className="space-y-4 pt-4 border-t border-zinc-100">
+            <div className="space-y-3 pt-3 border-t border-blue-200/50">
               <div>
                 <label className="label-text">Box Name</label>
                 <input 
@@ -1200,7 +1476,7 @@ export default function App() {
                   className="input-field"
                 />
               </div>
-              <div className="grid grid-cols-3 gap-3">
+              <div className="grid grid-cols-3 gap-2">
                 <div>
                   <label className="label-text">Length (mm)</label>
                   <NumberInput 
@@ -1262,7 +1538,7 @@ export default function App() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="label-text">Max Weight (kg)</label>
                   <NumberInput 
@@ -1293,20 +1569,115 @@ export default function App() {
             </div>
           </section>
 
-          {/* Pallet Configuration - Only show if not in courier mode */}
-          {shippingMethod === 'pallet' && (
-            <section className="glass-panel p-6 bg-emerald-50/30 border-emerald-100 shadow-xl shadow-emerald-900/5 rounded-[2.5rem]">
-              <div className="flex items-center gap-4 mb-6">
-                <div className="w-14 h-14 bg-emerald-600 text-white rounded-2xl flex items-center justify-center shadow-lg shadow-emerald-200 tilted-icon-container">
-                  <Layers size={28} />
+          {/* Shipment Items List */}
+          <section className="glass-panel p-4 bg-gradient-to-br from-zinc-50 to-zinc-100">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-zinc-800 text-white rounded-xl flex items-center justify-center shadow-md tilted-icon-container">
+                  <LayoutGrid size={20} />
                 </div>
                 <div>
-                  <h2 className="font-black text-2xl text-emerald-900 tracking-tight leading-none">Pallet Setup</h2>
-                  <p className="text-[10px] font-black text-emerald-400 uppercase tracking-[0.2em] mt-1">Platform Configuration</p>
+                  <div className="text-[9px] font-bold text-zinc-500 uppercase tracking-[0.2em] mb-0.5">Step 4</div>
+                  <h2 className="font-bold text-lg text-zinc-900 tracking-tight leading-none">Shipment Items</h2>
+                </div>
+                {shipmentItems.length > 0 && (
+                  <button 
+                    onClick={() => {
+                      if (window.confirm('Are you sure you want to clear all items from the shipment?')) {
+                        setShipmentItems([]);
+                        setEditingItemId(null);
+                      }
+                    }}
+                    className="ml-2 p-1.5 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                    title="Clear all items"
+                  >
+                    <RotateCcw size={14} />
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                {editingItemId && (
+                  <button 
+                    onClick={() => setEditingItemId(null)}
+                    className="px-3 py-1.5 bg-zinc-200 text-zinc-600 text-[10px] font-bold rounded-lg hover:bg-zinc-300 transition-all flex items-center gap-1.5 shadow-sm active:scale-95"
+                  >
+                    <RotateCcw size={14} />
+                    CANCEL
+                  </button>
+                )}
+                <button 
+                  onClick={addToShipment}
+                  className={cn(
+                    "px-3 py-1.5 text-white text-[10px] font-bold rounded-lg transition-all flex items-center gap-1.5 shadow-sm active:scale-95",
+                    editingItemId ? "bg-amber-600 hover:bg-amber-700" : "bg-zinc-900 hover:bg-zinc-800"
+                  )}
+                >
+                  {editingItemId ? <Edit2 size={14} /> : <Plus size={14} />}
+                  {editingItemId ? 'UPDATE ITEM' : 'ADD CURRENT'}
+                </button>
+              </div>
+            </div>
+
+            <div className="space-y-2 max-h-60 overflow-y-auto custom-scrollbar pr-1">
+              {shipmentItems.length === 0 ? (
+                <div className="text-center py-6 border-2 border-dashed border-zinc-200 rounded-xl">
+                  <p className="text-xs text-zinc-400 font-medium">No items in shipment yet.</p>
+                  <p className="text-[10px] text-zinc-300 mt-1">Add current part & box selection above.</p>
+                </div>
+              ) : (
+                shipmentItems.map((item) => {
+                  const p = parts.find(x => x.id === item.partId);
+                  const b = boxes.find(x => x.id === item.boxId);
+                  if (!p || !b) return null;
+                  const isEditing = editingItemId === item.id;
+                  return (
+                    <div key={item.id} className={cn(
+                      "flex items-center justify-between p-3 border rounded-xl shadow-sm group transition-all",
+                      isEditing ? "bg-amber-50 border-amber-200" : "bg-white border-zinc-200 hover:border-zinc-300"
+                    )}>
+                      <div className="flex flex-col">
+                        <span className="text-xs font-bold text-zinc-900">{p.name}</span>
+                        <span className="text-[10px] text-zinc-500 font-medium">
+                          {item.quantity} pcs • {b.name}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button 
+                          onClick={() => editShipmentItem(item)}
+                          className="p-1.5 text-zinc-400 hover:text-amber-600 hover:bg-amber-50 rounded-lg transition-all"
+                          title="Edit item"
+                        >
+                          <Edit2 size={14} />
+                        </button>
+                        <button 
+                          onClick={() => removeFromShipment(item.id)}
+                          className="p-1.5 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all"
+                          title="Remove item"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </section>
+
+          {/* Pallet Configuration - Only show if not in courier mode */}
+          {shippingMethod === 'pallet' && (
+            <section className="glass-panel p-4 bg-gradient-to-br from-emerald-50/90 to-teal-50/40">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 bg-emerald-600 text-white rounded-xl flex items-center justify-center shadow-md shadow-emerald-200 tilted-icon-container">
+                  <Layers size={20} />
+                </div>
+                <div>
+                  <div className="text-[9px] font-bold text-emerald-500 uppercase tracking-[0.2em] mb-0.5">Step 5</div>
+                  <h2 className="font-bold text-lg text-emerald-900 tracking-tight leading-none">Pallet Setup</h2>
                 </div>
               </div>
-              <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="label-text">Pallet Name</label>
                     <input 
@@ -1330,28 +1701,22 @@ export default function App() {
                 </div>
                 <div>
                   <label className="label-text">Standard Type</label>
-                  <div className="grid grid-cols-1 gap-2">
+                  <select
+                    value={pallet.id}
+                    onChange={(e) => {
+                      const selected = STANDARD_PALLETS.find(p => p.id === e.target.value);
+                      if (selected) setPallet(selected);
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-lg text-sm font-semibold focus:ring-2 focus:ring-emerald-500 outline-none text-zinc-900"
+                  >
                     {STANDARD_PALLETS.map(p => (
-                      <button
-                        key={p.id}
-                        onClick={() => setPallet(p)}
-                        className={cn(
-                          "text-left px-3 py-2 rounded-lg border text-sm transition-all",
-                          pallet.id === p.id 
-                            ? "border-emerald-500 bg-emerald-50 text-emerald-900 ring-1 ring-emerald-500" 
-                            : "border-zinc-200 hover:border-zinc-300 text-zinc-600"
-                        )}
-                      >
-                        <div className="font-medium">{p.name}</div>
-                        <div className="flex items-center justify-between">
-                          <div className="text-xs opacity-70">{p.length} x {p.width} mm</div>
-                          {p.description && <div className="text-[10px] opacity-60 italic">{p.description}</div>}
-                        </div>
-                      </button>
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.length}x{p.width}mm)
+                      </option>
                     ))}
-                  </div>
+                  </select>
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="label-text">Max Height (mm)</label>
                     <NumberInput 
@@ -1424,49 +1789,86 @@ export default function App() {
           )}
 
           {/* Shipment Planning */}
-          <section className="glass-panel p-6 bg-zinc-900 border-zinc-800 shadow-2xl shadow-zinc-900/20 rounded-[2.5rem] text-white">
-            <div className="flex items-center gap-4 mb-6">
-              <div className="w-14 h-14 bg-white text-zinc-900 rounded-2xl flex items-center justify-center shadow-lg tilted-icon-container">
-                <Settings size={28} />
+          <section className="glass-panel p-4 bg-gradient-to-br from-zinc-800 to-zinc-900 text-white">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 bg-white text-black rounded-xl flex items-center justify-center shadow-lg tilted-icon-container">
+                <Settings size={20} />
               </div>
               <div>
-                <h2 className="font-black text-2xl text-white tracking-tight leading-none">Shipment Summary</h2>
-                <p className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em] mt-1">Final Logistics Overview</p>
+                <div className="text-[9px] font-bold text-zinc-400 uppercase tracking-[0.2em] mb-0.5">Step 6</div>
+                <h2 className="font-bold text-lg text-white tracking-tight leading-none">Shipment Summary</h2>
               </div>
             </div>
             
-            <div className="space-y-4">
-              <div className="p-4 bg-white/5 rounded-2xl border border-white/10 space-y-3">
-                <div className="flex justify-between text-xs">
+            <div className="space-y-3">
+              <div className="p-3 bg-zinc-800/50 rounded-xl border border-zinc-700/50 space-y-2">
+                <div className="flex justify-between text-[11px]">
                   <span className="text-zinc-400">Shipping Method:</span>
                   <span className={cn(
-                    "font-black uppercase tracking-widest",
+                    "font-bold uppercase tracking-widest",
                     shippingMethod === 'pallet' ? "text-emerald-400" : "text-blue-400"
                   )}>
                     {shippingMethod}
                   </span>
                 </div>
-                <div className="flex justify-between text-xs">
+                <div className="flex justify-between text-[11px]">
                   <span className="text-zinc-400">Total Boxes to Order:</span>
-                  <span className="font-black text-white">{result.totalBoxesNeeded}</span>
+                  <span className="font-bold text-white">{result.totalBoxesNeeded}</span>
                 </div>
                 {shippingMethod === 'pallet' && calculationMode === 'full' && (
-                  <div className="flex justify-between text-xs">
+                  <div className="flex justify-between text-[11px]">
                     <span className="text-zinc-400">Total Pallets Needed:</span>
-                    <span className="font-black text-emerald-400">{result.totalPalletsNeeded}</span>
+                    <span className="font-bold text-emerald-400">{result.totalPalletsNeeded}</span>
                   </div>
                 )}
               </div>
+              <div className="grid grid-cols-2 gap-2">
+                <button 
+                  onClick={handleAIOptimizePalletization}
+                  disabled={isOptimizingPallet || shipmentItems.length === 0}
+                  className="py-3 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white text-[10px] font-bold rounded-xl transition-all shadow-md shadow-violet-900/20 flex items-center justify-center gap-1.5 disabled:opacity-50 active:scale-95"
+                >
+                  {isOptimizingPallet ? (
+                    <RotateCcw size={14} className="animate-spin" />
+                  ) : (
+                    <Sparkles size={14} />
+                  )}
+                  AI OPTIMIZE
+                </button>
+                <button 
+                  onClick={handleAnalyzeInsights}
+                  disabled={isAnalyzingInsights || shipmentItems.length === 0}
+                  className="py-3 bg-zinc-700 hover:bg-zinc-600 text-white text-[10px] font-bold rounded-xl transition-all shadow-md shadow-zinc-900/20 flex items-center justify-center gap-1.5 disabled:opacity-50 active:scale-95"
+                >
+                  {isAnalyzingInsights ? (
+                    <RotateCcw size={14} className="animate-spin" />
+                  ) : (
+                    <Zap size={14} />
+                  )}
+                  AI INSIGHTS
+                </button>
+              </div>
+              
+              {aiInsights && (
+                <div className="p-3 bg-zinc-800/80 rounded-xl border border-zinc-700 text-[10px] text-zinc-300 leading-relaxed max-h-40 overflow-y-auto custom-scrollbar-dark">
+                  <div className="flex items-center gap-1.5 text-violet-400 font-bold mb-1.5 uppercase tracking-widest">
+                    <Sparkles size={12} />
+                    AI Analysis
+                  </div>
+                  <div className="whitespace-pre-wrap">{aiInsights}</div>
+                </div>
+              )}
+
               <button 
                 onClick={() => handleExport('excel')}
                 className={cn(
-                  "w-full py-4 rounded-2xl text-sm font-black flex items-center justify-center gap-3 transition-all active:scale-95 shadow-xl",
+                  "w-full py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 transition-all active:scale-95 shadow-lg",
                   shippingMethod === 'courier'
                     ? "bg-blue-600 text-white shadow-blue-900/20 hover:bg-blue-500"
                     : "bg-emerald-600 text-white shadow-emerald-900/20 hover:bg-emerald-500"
                 )}
               >
-                <Download size={20} />
+                <Download size={16} />
                 GENERATE REPORT
               </button>
             </div>
@@ -1476,7 +1878,22 @@ export default function App() {
         {/* Right Column: Results & Visualization */}
         <div className="lg:col-span-8 space-y-6">
           <GeneralSummary 
-            result={result} 
+            result={useMemo(() => {
+              if (selectedPalletIndex === null || !result.pallets) return result;
+              const selectedPalletBoxes = result.pallets[selectedPalletIndex];
+              const palletWeight = selectedPalletBoxes.reduce((sum, b) => sum + (b.weight || 0), pallet.emptyWeight);
+              const maxH = selectedPalletBoxes.length > 0 ? Math.max(...selectedPalletBoxes.map(b => b.z + b.height)) : 0;
+              
+              return {
+                ...result,
+                palletWeight,
+                boxesPerPalletBalanced: selectedPalletBoxes.length,
+                loadDimensions: { ...result.loadDimensions, height: maxH },
+                totalPalletsNeeded: 1, // Focus on this one
+                isLastPalletDifferent: false
+              };
+            }, [result, selectedPalletIndex, pallet])} 
+            currentSingleResult={currentSingleResult}
             currentBox={box}
             currentPallet={pallet}
             currentPart={part}
@@ -1526,12 +1943,12 @@ export default function App() {
               <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 max-w-[200px]">
                 {viewMode === 'pallet' && result.totalPalletsNeeded > 1 && (
                   <div className="bg-white/80 backdrop-blur-md p-2 rounded-xl border border-zinc-200 shadow-sm space-y-2">
-                    <div className="text-[10px] font-black text-zinc-400 uppercase px-1">Pallet Selection</div>
+                    <div className="text-[9px] font-bold text-zinc-400 uppercase px-1">Pallet Selection</div>
                     <div className="flex flex-wrap gap-1">
                       <button
                         onClick={() => setSelectedPalletIndex(null)}
                         className={cn(
-                          "px-2 py-1 rounded text-[10px] font-black transition-all",
+                          "px-2 py-1 rounded text-[9px] font-bold transition-all",
                           selectedPalletIndex === null ? "bg-emerald-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
                         )}
                       >
@@ -1542,7 +1959,7 @@ export default function App() {
                           key={idx}
                           onClick={() => setSelectedPalletIndex(idx)}
                           className={cn(
-                            "px-2 py-1 rounded text-[10px] font-black transition-all",
+                            "px-2 py-1 rounded text-[9px] font-bold transition-all",
                             selectedPalletIndex === idx ? "bg-emerald-600 text-white" : "bg-zinc-100 text-zinc-600 hover:bg-zinc-200"
                           )}
                         >
@@ -1559,7 +1976,7 @@ export default function App() {
                 part={part}
                 box={box}
                 pallet={pallet}
-                result={result}
+                result={viewMode === 'box' ? currentSingleResult : result}
                 selectedPalletIndex={selectedPalletIndex}
               />
 
@@ -1582,68 +1999,14 @@ export default function App() {
                           box={box}
                           pallet={pallet}
                           result={result}
-                          selectedPalletIndex={0}
+                          selectedPalletIndex={currentPalletCaptureIndex}
                           onCapture={(img) => {
-                            setPalletImage(img);
-                            const hasDifferentLastPallet = (result.totalPalletsNeeded > 1 && result.isLastPalletDifferent);
-                            if (hasDifferentLastPallet) {
-                              setExportStep('lastPallet');
-                            } else {
-                              setExportStep('box');
-                            }
-                          }}
-                        />
-                      </div>
-                    )}
-                    {exportStep === 'lastPallet' && (
-                      <div className="w-[800px] h-[600px]">
-                        <PackingCanvas 
-                          viewMode="pallet"
-                          part={part}
-                          box={box}
-                          pallet={pallet}
-                          result={result}
-                          selectedPalletIndex={result.totalPalletsNeeded - 1}
-                          onCapture={(img) => {
-                            setLastPalletImage(img);
-                            setExportStep('box');
-                          }}
-                        />
-                      </div>
-                    )}
-                    {exportStep === 'box' && (
-                      <div className="w-[800px] h-[600px]">
-                        <PackingCanvas 
-                          viewMode="box"
-                          part={part}
-                          box={box}
-                          pallet={pallet}
-                          result={result}
-                          selectedPalletIndex={null}
-                          onCapture={(img) => {
-                            setBoxImage(img);
-                            if (result.isLastBoxDifferent) {
-                              setExportStep('lastBox');
+                            setPalletImages(prev => [...prev, img]);
+                            if (currentPalletCaptureIndex < (result.totalPalletsNeeded || 1) - 1) {
+                              setCurrentPalletCaptureIndex(prev => prev + 1);
                             } else {
                               setExportStep('final');
                             }
-                          }}
-                        />
-                      </div>
-                    )}
-                    {exportStep === 'lastBox' && (
-                      <div className="w-[800px] h-[600px]">
-                        <PackingCanvas 
-                          viewMode="box"
-                          part={part}
-                          box={box}
-                          pallet={pallet}
-                          result={result}
-                          selectedPalletIndex={null}
-                          isLastBox={true}
-                          onCapture={(img) => {
-                            setLastBoxImage(img);
-                            setExportStep('final');
                           }}
                         />
                       </div>
@@ -1693,159 +2056,7 @@ export default function App() {
             </div>
           </div>
 
-          {/* Detailed Breakdown */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <section className="glass-panel p-5">
-              <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
-                <Info size={14} className="text-blue-500" />
-                Box Efficiency
-              </h3>
-              <div className="space-y-3">
-                <div className="flex justify-between text-sm">
-                  <span className="text-zinc-500">Gross Weight</span>
-                  <span className="font-medium">{result.boxWeight.toFixed(2)} kg</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-zinc-500">Net Weight (Parts)</span>
-                  <span className="font-medium">{(result.partsPerBox * part.weight).toFixed(2)} kg</span>
-                </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-zinc-500">Volume Used</span>
-                  <span className="font-medium">{(result.boxVolumeUtilization * 100).toFixed(1)}%</span>
-                </div>
-                <div className="w-full bg-zinc-100 h-2 rounded-full overflow-hidden mt-2">
-                  <motion.div 
-                    initial={{ width: 0 }}
-                    animate={{ width: `${result.boxVolumeUtilization * 100}%` }}
-                    className="h-full bg-blue-500"
-                  />
-                </div>
-              </div>
-            </section>
-
-            {shippingMethod === 'pallet' && (
-              <section className="glass-panel p-5">
-                <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
-                  <Info size={14} className="text-purple-500" />
-                  Pallet Efficiency
-                </h3>
-                <div className="space-y-3">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-zinc-500">Total Weight (Full)</span>
-                    <span className="font-medium">{result.palletWeight.toFixed(1)} kg</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-zinc-500">Total Shipment Weight</span>
-                    <span className="font-medium text-emerald-600">
-                      {((result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded) * result.balancedPalletWeight + (result.isLastPalletDifferent ? result.lastPalletWeight : 0)).toFixed(1)} kg
-                    </span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-zinc-500">Load Dimensions</span>
-                    <span className="font-medium">{Math.round(result.loadDimensions.length)} x {Math.round(result.loadDimensions.width)} x {Math.round(result.loadDimensions.height)} mm</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-zinc-500">Weight Capacity Used</span>
-                    <span className="font-medium">{((result.palletWeight / pallet.maxWeight) * 100).toFixed(1)}%</span>
-                  </div>
-                  <div className="flex justify-between text-sm">
-                    <span className="text-zinc-500">Volume Used</span>
-                    <span className="font-medium">{(result.palletVolumeUtilization * 100).toFixed(1)}%</span>
-                  </div>
-                  <div className="w-full bg-zinc-100 h-2 rounded-full overflow-hidden mt-2">
-                    <motion.div 
-                      initial={{ width: 0 }}
-                      animate={{ width: `${result.palletVolumeUtilization * 100}%` }}
-                      className="h-full bg-purple-500"
-                    />
-                  </div>
-                </div>
-              </section>
-            )}
-
-            {shippingMethod === 'pallet' && (
-              <section className="glass-panel p-5 md:col-span-2">
-                <h3 className="font-semibold text-sm mb-4 flex items-center gap-2">
-                  <Truck size={14} className="text-emerald-500" />
-                  Pallet Distribution
-                </h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                  <div className="space-y-4">
-                    {(!result.isLastPalletDifferent || result.totalPalletsNeeded > 1) && (
-                      <div className="flex items-center justify-between p-4 bg-emerald-50 rounded-xl border border-emerald-100">
-                        <div>
-                          <div className="text-[10px] font-bold text-emerald-600 uppercase">Standard Pallets</div>
-                          <div className="text-2xl font-bold text-emerald-900">
-                            {result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded}
-                          </div>
-                          <div className="text-[10px] text-emerald-700 font-medium mt-1">
-                            Weight: <span className="font-bold">{result.balancedPalletWeight.toFixed(1)} kg</span>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-[10px] font-bold text-emerald-600 uppercase">Boxes / Pallet</div>
-                          <div className="text-2xl font-bold text-emerald-900">{result.boxesPerPalletBalanced}</div>
-                        </div>
-                      </div>
-                    )}
-                    
-                    {result.isLastPalletDifferent && (
-                      <div className="flex items-center justify-between p-4 bg-amber-50 rounded-xl border border-amber-100">
-                        <div>
-                          <div className="text-[10px] font-bold text-amber-600 uppercase">{result.totalPalletsNeeded === 1 ? 'Pallet' : 'Last Pallet'}</div>
-                          <div className="text-2xl font-bold text-amber-900">1</div>
-                          <div className="text-[10px] text-amber-700 font-medium mt-1">
-                            Weight: <span className="font-bold">{result.lastPalletWeight.toFixed(1)} kg</span>
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-[10px] font-bold text-amber-600 uppercase">Boxes / Pallet</div>
-                          <div className="text-2xl font-bold text-amber-900">{result.lastPalletBoxes}</div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  
-                  <div className="flex flex-col justify-center space-y-3">
-                    <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-emerald-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <div className="w-2 h-2 rounded-full bg-emerald-600" />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-xs text-zinc-600 leading-relaxed">
-                          Wysyłka zostanie podzielona na <span className="font-bold text-zinc-900">{result.totalPalletsNeeded}</span> palet.
-                        </p>
-                        {result.totalPalletsNeeded > 1 && (
-                          <p className="text-[10px] text-zinc-500 italic">
-                            {result.isLastPalletDifferent 
-                              ? `Pełna paleta: ${result.boxesPerPalletBalanced} boxów. Ostatnia paleta: ${result.lastPalletBoxes} boxów.`
-                              : `Każda paleta zawiera ${result.boxesPerPalletBalanced} boxów.`
-                            }
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                    <div className="flex items-start gap-3">
-                      <div className="w-5 h-5 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0 mt-0.5">
-                        <div className="w-2 h-2 rounded-full bg-blue-600" />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-xs text-zinc-600 leading-relaxed">
-                          Należy zamówić łącznie <span className="font-bold text-zinc-900">{result.totalBoxesNeeded}</span> kartonów typu <span className="italic">{box.name}</span>.
-                        </p>
-                        <p className="text-[10px] text-zinc-500 italic">
-                          {result.isLastBoxDifferent
-                            ? `Pełny karton: ${result.partsPerBox} szt. Ostatni karton: ${result.partsInLastBox} szt.`
-                            : `Każdy karton zawiera ${result.partsPerBox} sztuk części.`
-                          }
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </section>
-            )}
-          </div>
+          {/* Detailed Breakdown Removed */}
         </div>
       </main>
 
