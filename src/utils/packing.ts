@@ -102,20 +102,40 @@ export function evaluatePalletStability(boxes: PackedBox[], pallet: Pallet): { s
  * Tries orientations to find the maximum.
  * @param verticalOnly If true, only allows swapping length and width (keeps height constant).
  */
-export function calculateMaxFit(item: Dimensions, box: Dimensions, verticalOnly: boolean = false, maxAllowed?: number): { count: number; maxCapacity: number; orientation: string; nx: number; ny: number; nz: number; layout?: PackingLayout } {
-  const orientations = verticalOnly 
-    ? [
-        [item.length, item.width, item.height],
-        [item.width, item.length, item.height],
-      ]
-    : [
-        [item.length, item.width, item.height],
-        [item.length, item.height, item.width],
-        [item.width, item.length, item.height],
-        [item.width, item.height, item.length],
-        [item.height, item.length, item.width],
-        [item.height, item.width, item.length],
-      ];
+export function calculateMaxFit(item: Dimensions & { primaryOrientation?: 'length' | 'width' | 'height' }, box: Dimensions, verticalOnly: boolean = false, maxAllowed?: number): { count: number; maxCapacity: number; orientation: string; nx: number; ny: number; nz: number; layout?: PackingLayout } {
+  let orientations: number[][];
+  
+  if (item.primaryOrientation) {
+    const all = [
+      [item.length, item.width, item.height],
+      [item.length, item.height, item.width],
+      [item.width, item.length, item.height],
+      [item.width, item.height, item.length],
+      [item.height, item.length, item.width],
+      [item.height, item.width, item.length],
+    ];
+    
+    orientations = all.filter(o => {
+      if (item.primaryOrientation === 'length') return o[2] === item.length;
+      if (item.primaryOrientation === 'width') return o[2] === item.width;
+      if (item.primaryOrientation === 'height') return o[2] === item.height;
+      return true;
+    });
+  } else {
+    orientations = verticalOnly 
+      ? [
+          [item.length, item.width, item.height],
+          [item.width, item.length, item.height],
+        ]
+      : [
+          [item.length, item.width, item.height],
+          [item.length, item.height, item.width],
+          [item.width, item.length, item.height],
+          [item.width, item.height, item.length],
+          [item.height, item.length, item.width],
+          [item.height, item.width, item.length],
+        ];
+  }
 
   let bestActualCount = 0;
   let bestRequiredHeight = Infinity;
@@ -272,13 +292,14 @@ export function suggestBestBox(part: Part, pallet: Pallet, shippingMethod: 'pall
     const factorsW = [1, 2, 3, 4].map(f => pallet.width / f);
     const isModularL = factorsL.some(f => Math.abs(l - f) < 10);
     const isModularW = factorsW.some(f => Math.abs(w - f) < 10);
-    if (isModularL) score += 25;
-    if (isModularW) score += 25;
+    if (isModularL) score += 50;
+    if (isModularW) score += 50;
     return score;
   };
 
   // 1. Try standard dimensions
   for (const dims of standardDimensions) {
+    const boxWeight = 0.5 + (dims.l * dims.w * dims.h) / 100000000;
     const testBox: Container = {
       id: 'test',
       name: 'Test',
@@ -286,17 +307,19 @@ export function suggestBestBox(part: Part, pallet: Pallet, shippingMethod: 'pall
       width: dims.w,
       height: dims.h,
       maxWeight: 25,
-      emptyWeight: 0.5 + (dims.l * dims.w * dims.h) / 100000000,
+      emptyWeight: boxWeight,
+      weight: boxWeight
     };
     const result = optimizePacking(part, testBox, pallet, part.orderQuantity);
     let score = result.boxVolumeUtilization * 100;
     score += getModularityScore(testBox.length, testBox.width);
     score -= Math.abs(result.boxVolumeUtilization - 0.85) * 150;
-    if (result.partsPerBox === targetPartsPerBox) score += 30;
-    else score -= Math.abs(result.partsPerBox - targetPartsPerBox) * 2;
+    if (result.partsPerBox === targetPartsPerBox) score += 50;
+    else score -= Math.abs(result.partsPerBox - targetPartsPerBox) * 5;
+    
     if (score > bestScore) {
       bestScore = score;
-      bestBox = testBox;
+      bestBox = { ...testBox, id: `standard-${Date.now()}`, name: `Standard ${dims.l}x${dims.w}x${dims.h}`, createdAt: Date.now() };
     }
   }
 
@@ -311,44 +334,52 @@ export function suggestBestBox(part: Part, pallet: Pallet, shippingMethod: 'pall
   ];
   const palletUsableHeight = pallet.maxHeight - pallet.height;
   for (const [pl, pw, ph] of orientations) {
-    for (let nx = 1; nx <= 10; nx++) {
-      for (let ny = 1; ny <= 10; ny++) {
-        for (let nz = 1; nz <= 10; nz++) {
+    for (let nx = 1; nx <= 15; nx++) {
+      for (let ny = 1; ny <= 15; ny++) {
+        for (let nz = 1; nz <= 15; nz++) {
           const count = nx * ny * nz;
-          if (count > targetPartsPerBox * 1.5 && count > 1) continue;
+          if (count > targetPartsPerBox * 1.5 && count > 5) continue;
           const stackL = nx * pl;
           const stackW = ny * pw;
           const stackH = nz * ph;
-          let boxL = stackL + 20;
-          let boxW = stackW + 20;
-          let boxH = stackH + 20;
+          let boxL = Math.round(stackL + 20);
+          let boxW = Math.round(stackW + 20);
+          let boxH = Math.round(stackH + 20);
           if (boxL < 50 || boxW < 50 || boxH < 50) continue;
           if (boxL > 600 || boxW > 600 || boxH > 600) continue;
           if (boxH > palletUsableHeight) continue;
           if (boxL > pallet.length || boxW > pallet.width) continue;
+          
+          const totalWeight = count * part.weight;
+          if (totalWeight > 25) continue;
+
           const utilization = (stackL * stackW * stackH) / (boxL * boxW * boxH);
           let score = utilization * 100;
           score -= Math.abs(utilization - 0.85) * 200;
           score += getModularityScore(boxL, boxW);
-          if (count === targetPartsPerBox) score += 50;
-          else score -= Math.abs(count - targetPartsPerBox) * 5;
+          if (count === targetPartsPerBox) score += 100;
+          else score -= Math.abs(count - targetPartsPerBox) * 10;
+          
           if (score > bestScore) {
             bestScore = score;
+            const boxWeight = 0.5 + (boxL * boxW * boxH) / 100000000;
             bestBox = {
-              id: 'custom',
-              name: `BC ${Math.round(boxL)}x${Math.round(boxW)}x${Math.round(boxH)}`,
-              length: Math.round(boxL),
-              width: Math.round(boxW),
-              height: Math.round(boxH),
-              maxWeight: 25,
-              emptyWeight: 0.5 + (boxL * boxW * boxH) / 100000000,
+              id: `custom-${Date.now()}`,
+              name: `BC ${boxL}x${boxW}x${boxH}`,
+              length: boxL,
+              width: boxW,
+              height: boxH,
+              maxWeight: 30,
+              emptyWeight: boxWeight,
+              weight: boxWeight,
+              createdAt: Date.now()
             };
           }
         }
       }
     }
   }
-  return bestBox || { id: 'default', name: 'Default Box', length: 600, width: 400, height: 300, maxWeight: 25, emptyWeight: 0.5 };
+  return bestBox || { id: 'default', name: 'Default Box', length: 600, width: 400, height: 300, maxWeight: 25, emptyWeight: 0.5, weight: 0.5 };
 }
 
 export function optimizeMixedShipment(
@@ -378,7 +409,7 @@ export function optimizeMixedShipment(
     for (let i = 0; i < res.totalBoxesNeeded; i++) {
       const isLast = i === res.totalBoxesNeeded - 1 && res.isLastBoxDifferent;
       const pCount = isLast ? res.partsInLastBox : res.partsPerBox;
-      const bWeight = (pCount * item.part.weight) + item.box.emptyWeight;
+      const bWeight = (pCount * item.part.weight) + (item.box.weight || item.box.emptyWeight);
 
       allPackedBoxes.push({
         id: item.box.id,
@@ -433,7 +464,7 @@ export function optimizeMixedShipment(
 
     // Find the actual weight from the items
     const matchingItem = items.find(it => it.box.length === bl && it.box.width === bw && it.box.height === bh);
-    const actualBoxWeight = matchingItem ? (matchingItem.part.weight * (optimizePacking(matchingItem.part, matchingItem.box, pallet, matchingItem.quantity).partsPerBox) + matchingItem.box.emptyWeight) : boxWeight;
+    const actualBoxWeight = matchingItem ? (matchingItem.part.weight * (optimizePacking(matchingItem.part, matchingItem.box, pallet, matchingItem.quantity).partsPerBox) + (matchingItem.box.weight || matchingItem.box.emptyWeight)) : boxWeight;
 
     // Pack these boxes into layers
     const fit = calculateMaxFit({ length: bl, width: bw, height: bh }, { length: pallet.length, width: pallet.width, height: palletUsableHeight }, true);
@@ -526,7 +557,8 @@ export function optimizeMixedShipment(
 
 export function optimizePacking(part: Part, box: Container, pallet: Pallet, totalOrderQuantity: number = 0): PackingResult {
   // 1. Determine maximum parts allowed by weight and user limits
-  const maxPartsByWeight = Math.floor((box.maxWeight - box.emptyWeight) / part.weight);
+  const boxW = box.weight || box.emptyWeight;
+  const maxPartsByWeight = Math.floor((box.maxWeight - boxW) / part.weight);
   let maxAllowed = maxPartsByWeight;
   
   if (part.fixedPartsPerBox !== undefined && part.fixedPartsPerBox > 0) {
@@ -580,7 +612,7 @@ export function optimizePacking(part: Part, box: Container, pallet: Pallet, tota
     height: palletUsableHeight
   };
 
-  const boxTotalWeight = (actualPartsPerBox * part.weight) + box.emptyWeight;
+  const boxTotalWeight = (actualPartsPerBox * part.weight) + (box.weight || box.emptyWeight);
   const maxBoxesByWeight = Math.floor((pallet.maxWeight - pallet.emptyWeight) / boxTotalWeight);
 
   // For pallets, we usually only rotate around vertical axis (length/width swap)

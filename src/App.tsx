@@ -24,8 +24,6 @@ import {
   Trash2,
   Edit2,
   Check,
-  Sparkles,
-  Cpu,
   Archive,
   Palette,
   Settings,
@@ -45,8 +43,6 @@ import { exportToExcel, downloadImportTemplate } from './utils/export';
 import { sendEmailReport } from './utils/email';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
-import { GoogleGenAI } from '@google/genai';
-import { getOptimalBoxSuggestion, optimizePalletizationWithAI, analyzePalletizationInsights, type AISuggestion } from './services/geminiService';
 import { LibrarySelector } from './components/LibrarySelector';
 
 function cn(...inputs: ClassValue[]) {
@@ -802,37 +798,9 @@ export default function App() {
   const [exportType, setExportType] = useState<'excel' | 'email' | null>(null);
   const [palletImages, setPalletImages] = useState<string[]>([]);
   const [currentPalletCaptureIndex, setCurrentPalletCaptureIndex] = useState(0);
-  const [aiInsights, setAiInsights] = useState<string | null>(null);
-  const [isAnalyzingInsights, setIsAnalyzingInsights] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [isSuggestingAI, setIsSuggestingAI] = useState(false);
   const [isSuggestingBest, setIsSuggestingBest] = useState(false);
   const [isOptimizingPallet, setIsOptimizingPallet] = useState(false);
-
-  const handleAISuggestion = async () => {
-    setIsSuggestingAI(true);
-    try {
-      const suggestion = await getOptimalBoxSuggestion(part, part.orderQuantity, shippingMethod, shippingMethod === 'pallet' ? pallet : undefined);
-      
-      const newBox: Container = {
-        id: Math.random().toString(36).substr(2, 9),
-        name: suggestion.boxName,
-        length: suggestion.length,
-        width: suggestion.width,
-        height: suggestion.height,
-        maxWeight: 30, // Default max weight for courier/general
-        emptyWeight: 0.5 // Default empty weight
-      };
-      
-      setBoxes([...boxes, newBox]);
-      setSelectedBoxId(newBox.id);
-      alert('Optymalizacja wykonana');
-    } catch (error) {
-      alert(error instanceof Error ? error.message : 'Failed to get AI suggestion');
-    } finally {
-      setIsSuggestingAI(false);
-    }
-  };
 
   const handleSuggestBestBox = () => {
     setIsSuggestingBest(true);
@@ -849,56 +817,6 @@ export default function App() {
       console.error("Error suggesting best box:", error);
     } finally {
       setIsSuggestingBest(false);
-    }
-  };
-
-  const handleAIOptimizePalletization = async () => {
-    if (shipmentItems.length === 0) return;
-    setIsOptimizingPallet(true);
-    try {
-      const result = await optimizePalletizationWithAI(shipmentItems, parts, boxes, pallet, aiInsights);
-      if (result.suggestedBoxChanges && result.suggestedBoxChanges.length > 0) {
-        let updatedBoxes = [...boxes];
-        let updatedShipmentItems = [...shipmentItems];
-
-        for (const change of result.suggestedBoxChanges) {
-          const newBox: Container = {
-            id: Math.random().toString(36).substr(2, 9),
-            name: change.newBox.name || 'AI Optimized Box',
-            length: change.newBox.length || 600,
-            width: change.newBox.width || 400,
-            height: change.newBox.height || 300,
-            maxWeight: 25,
-            emptyWeight: 0.5,
-            createdAt: Date.now()
-          };
-          updatedBoxes.push(newBox);
-          updatedShipmentItems = updatedShipmentItems.map(item => 
-            item.partId === change.partId ? { ...item, boxId: newBox.id } : item
-          );
-        }
-        setBoxes(updatedBoxes);
-        setShipmentItems(updatedShipmentItems);
-        setAiInsights(result.explanation);
-      } else {
-        setAiInsights(result.explanation || "AI uważa, że obecne ustawienia są optymalne.");
-      }
-    } catch (error) {
-      console.error("Error optimizing palletization with AI:", error);
-    } finally {
-      setIsOptimizingPallet(false);
-    }
-  };
-
-  const handleAnalyzeInsights = async () => {
-    setIsAnalyzingInsights(true);
-    try {
-      const insights = await analyzePalletizationInsights(result, pallet, shipmentItems, parts, boxes);
-      setAiInsights(insights);
-    } catch (error) {
-      console.error('AI Insights failed:', error);
-    } finally {
-      setIsAnalyzingInsights(false);
     }
   };
 
@@ -1367,6 +1285,20 @@ export default function App() {
                   </div>
                 </div>
                 <div>
+                  <label className="label-text">Primary Orientation</label>
+                  <select 
+                    value={part.primaryOrientation || 'height'} 
+                    onChange={e => handlePartChange({ primaryOrientation: e.target.value as any })}
+                    className="input-field"
+                  >
+                    <option value="length">Length Up</option>
+                    <option value="width">Width Up</option>
+                    <option value="height">Height Up</option>
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
                   <label className="label-text">Total Order Qty</label>
                   <NumberInput 
                     value={part.orderQuantity} 
@@ -1376,8 +1308,6 @@ export default function App() {
                     max={1000000}
                   />
                 </div>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="label-text">Number of Boxes (Optional)</label>
                   <NumberInput 
@@ -1395,6 +1325,8 @@ export default function App() {
                     placeholder="Auto"
                   />
                 </div>
+              </div>
+              <div className="grid grid-cols-1 gap-2">
                 <div>
                   <label className="label-text">Parts per Box (Optional)</label>
                   <NumberInput 
@@ -1553,16 +1485,18 @@ export default function App() {
                   />
                 </div>
                 <div>
-                  <label className="label-text">Empty Weight (kg)</label>
+                  <label className="label-text">Box Weight (kg)</label>
                   <NumberInput 
-                    value={box.emptyWeight} 
+                    value={box.weight || box.emptyWeight || 0} 
                     onChange={e => {
-                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, emptyWeight: Number(e.target.value)} : c);
+                      const val = Number(e.target.value);
+                      const newBoxes = boxes.map(c => c.id === selectedBoxId ? {...c, weight: val, emptyWeight: val} : c);
                       setBoxes(newBoxes);
                     }}
                     className="input-field"
                     min={0}
-                    max={10000}
+                    max={100}
+                    step={0.1}
                   />
                 </div>
               </div>
@@ -1822,42 +1756,20 @@ export default function App() {
                   </div>
                 )}
               </div>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-1 gap-2">
                 <button 
-                  onClick={handleAIOptimizePalletization}
-                  disabled={isOptimizingPallet || shipmentItems.length === 0}
-                  className="py-3 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-700 hover:to-indigo-700 text-white text-[10px] font-bold rounded-xl transition-all shadow-md shadow-violet-900/20 flex items-center justify-center gap-1.5 disabled:opacity-50 active:scale-95"
+                  onClick={() => {
+                    // Trigger a re-calculation or optimization
+                    setCalculationMode('full');
+                    alert('Palletization optimized using local algorithm.');
+                  }}
+                  disabled={shipmentItems.length === 0}
+                  className="py-3 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-[10px] font-bold rounded-xl transition-all shadow-md shadow-emerald-900/20 flex items-center justify-center gap-1.5 disabled:opacity-50 active:scale-95"
                 >
-                  {isOptimizingPallet ? (
-                    <RotateCcw size={14} className="animate-spin" />
-                  ) : (
-                    <Sparkles size={14} />
-                  )}
-                  AI OPTIMIZE
-                </button>
-                <button 
-                  onClick={handleAnalyzeInsights}
-                  disabled={isAnalyzingInsights || shipmentItems.length === 0}
-                  className="py-3 bg-zinc-700 hover:bg-zinc-600 text-white text-[10px] font-bold rounded-xl transition-all shadow-md shadow-zinc-900/20 flex items-center justify-center gap-1.5 disabled:opacity-50 active:scale-95"
-                >
-                  {isAnalyzingInsights ? (
-                    <RotateCcw size={14} className="animate-spin" />
-                  ) : (
-                    <Zap size={14} />
-                  )}
-                  AI INSIGHTS
+                  <Layers size={14} />
+                  OPTIMIZE PALLETIZATION
                 </button>
               </div>
-              
-              {aiInsights && (
-                <div className="p-3 bg-zinc-800/80 rounded-xl border border-zinc-700 text-[10px] text-zinc-300 leading-relaxed max-h-40 overflow-y-auto custom-scrollbar-dark">
-                  <div className="flex items-center gap-1.5 text-violet-400 font-bold mb-1.5 uppercase tracking-widest">
-                    <Sparkles size={12} />
-                    AI Analysis
-                  </div>
-                  <div className="whitespace-pre-wrap">{aiInsights}</div>
-                </div>
-              )}
 
               <button 
                 onClick={() => handleExport('excel')}

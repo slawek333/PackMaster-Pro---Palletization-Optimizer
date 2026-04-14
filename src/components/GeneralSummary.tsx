@@ -212,7 +212,7 @@ export const GeneralSummary = ({
                         {currentPallet.name} ({result.isLastPalletDifferent ? result.totalPalletsNeeded - 1 : result.totalPalletsNeeded})
                       </span>
                       <div className="text-[10px] text-zinc-500 font-black uppercase tracking-widest mt-0.5">
-                        {currentPallet.length}x{currentPallet.width}x{result.loadDimensions.height} mm
+                        Dims: {currentPallet.length}x{currentPallet.width} mm | Total Height: {result.loadDimensions.height} mm
                       </div>
                     </div>
                     <div className="text-right">
@@ -227,7 +227,7 @@ export const GeneralSummary = ({
                         {currentPallet.name} {result.totalPalletsNeeded === 1 ? '(1)' : '(Last)'}
                       </span>
                       <div className="text-[10px] text-zinc-500 font-black uppercase tracking-widest mt-0.5">
-                        {currentPallet.length}x{currentPallet.width}x{result.loadDimensions.height} mm
+                        Dims: {currentPallet.length}x{currentPallet.width} mm | Total Height: {result.loadDimensions.height} mm
                       </div>
                     </div>
                     <div className="text-right">

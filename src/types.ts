@@ -13,6 +13,7 @@ export interface Part extends Dimensions {
   targetBoxCount?: number;
   fixedPartsPerBox?: number;
   createdAt?: number;
+  primaryOrientation?: 'length' | 'width' | 'height';
 }
 
 export interface Container extends Dimensions {
@@ -20,6 +21,7 @@ export interface Container extends Dimensions {
   name: string;
   maxWeight: number; // in kg
   emptyWeight: number; // in kg
+  weight?: number; // in kg
   createdAt?: number;
 }
 
