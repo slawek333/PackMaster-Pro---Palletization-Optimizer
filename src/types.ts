@@ -13,7 +13,6 @@ export interface Part extends Dimensions {
   targetBoxCount?: number;
   fixedPartsPerBox?: number;
   createdAt?: number;
-  primaryOrientation?: 'length' | 'width' | 'height';
 }
 
 export interface Container extends Dimensions {
@@ -35,7 +34,7 @@ export interface Pallet extends Dimensions {
 }
 
 export interface PackingLayout {
-  type: 'grid' | 'two-block-v' | 'two-block-h';
+  type: 'grid' | 'two-block-v' | 'two-block-h' | 'mixed-layer';
   nx1: number;
   ny1: number;
   nx2: number;
@@ -45,6 +44,14 @@ export interface PackingLayout {
   h: number;
   x?: number;
   y?: number;
+  // For mixed-layer
+  nz1?: number;
+  nz2?: number;
+  l2?: number;
+  w2?: number;
+  h2?: number;
+  nx2_layer?: number;
+  ny2_layer?: number;
 }
 
 export interface ShipmentItem {
@@ -63,6 +70,8 @@ export interface PackingResult {
   palletWeight: number;
   boxVolumeUtilization: number;
   palletVolumeUtilization: number;
+  palletFloorAreaUtilization?: number; // New
+  layerCount?: number; // New
   orientations: {
     box: string;
     pallet: string;
@@ -73,7 +82,7 @@ export interface PackingResult {
   layout?: PackingLayout;
   palletLayout?: PackingLayout;
   boxes?: PackedBox[];
-  pallets?: PackedBox[][];
+  pallets?: PalletLoad[]; // Changed from PackedBox[][]
   // Shipment details
   totalBoxesNeeded: number;
   totalPalletsNeeded: number;
@@ -109,10 +118,13 @@ export interface PalletLoad {
   boxes: PackedBox[];
   weight: number;
   volumeUtilization: number;
+  floorAreaUtilization: number; // New
+  layerCount: number; // New
   loadDimensions: Dimensions;
   stabilityScore?: number; // 0 to 1
   isStable?: boolean;
   warnings?: string[];
+  reasonForNewPallet?: string; // New
 }
 
 export type ShippingMethod = 'pallet' | 'courier';

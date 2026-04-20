@@ -299,17 +299,16 @@ export async function exportToExcel(
     const groupedPallets = new Map<string, { count: number, indices: number[], weight: number, boxes: number, partsStr: string, dims: string }>();
     
     shipmentResult.pallets.forEach((p, index) => {
-      const maxHeight = p.length > 0 ? Math.max(...p.map(b => b.z + b.height)) : 0;
-      const totalHeight = pallet.height + maxHeight;
+      const totalHeight = p.loadDimensions.height;
       const dims = `${pallet.length} x ${pallet.width} x ${Math.round(totalHeight)}`;
       
-      const palletWeight = p.reduce((sum, b) => sum + (b.weight || 0), pallet.emptyWeight);
+      const palletWeight = p.weight;
       const weightStr = palletWeight.toFixed(1);
-      const boxCount = p.length;
+      const boxCount = p.boxes.length;
       
       // Count parts per pallet
       const partCounts: { [key: string]: number } = {};
-      p.forEach(b => {
+      p.boxes.forEach(b => {
         // We need to know how many parts are in this box. 
         // We can find the item by partName
         const item = items.find(it => it.part.name === b.partName);
@@ -369,7 +368,7 @@ export async function exportToExcel(
   // 5. SHIPMENT SUMMARY
   addSectionHeader(`${sectionCounter}. SHIPMENT SUMMARY`);
   if (shippingMethod === 'pallet') {
-    const totalShipmentWeight = shipmentResult.pallets?.reduce((sum, p) => sum + p.reduce((s, b) => s + (b.weight || 0), pallet.emptyWeight), 0) || 0;
+    const totalShipmentWeight = shipmentResult.pallets?.reduce((sum, p) => sum + p.weight, 0) || 0;
     addTableHeader(['Total Pallets', 'Total Boxes', 'Total Shipment Weight (kg)']);
     addDataRow([
       shipmentResult.totalPalletsNeeded,

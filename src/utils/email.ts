@@ -203,16 +203,15 @@ export function generateEML(
     const groupedPallets = new Map<string, { count: number, indices: number[], weight: number, boxes: number, partsStr: string, dims: string }>();
     
     shipmentResult.pallets.forEach((p, index) => {
-      const maxHeight = p.length > 0 ? Math.max(...p.map(b => b.z + b.height)) : 0;
-      const totalHeight = pallet.height + maxHeight;
+      const totalHeight = p.loadDimensions.height;
       const dims = `${pallet.length} x ${pallet.width} x ${Math.round(totalHeight)}`;
       
-      const palletWeight = p.reduce((sum, b) => sum + (b.weight || 0), pallet.emptyWeight);
+      const palletWeight = p.weight;
       const weightStr = palletWeight.toFixed(1);
-      const boxCount = p.length;
+      const boxCount = p.boxes.length;
       
       const partCounts: { [key: string]: number } = {};
-      p.forEach(b => {
+      p.boxes.forEach(b => {
         partCounts[b.partName] = (partCounts[b.partName] || 0) + 1;
       });
       
@@ -280,7 +279,7 @@ export function generateEML(
                 <tr>
                   ${shippingMethod === 'pallet' ? `<td><strong>${shipmentResult.totalPalletsNeeded}</strong></td>` : ''}
                   <td><strong>${totalBoxesCount}</strong></td>
-                  <td><strong>${(shippingMethod === 'pallet' ? (shipmentResult.pallets?.reduce((sum, p) => sum + p.reduce((s, b) => s + (b.weight || 0), pallet.emptyWeight), 0) || 0) : totalBoxesWeight).toFixed(2)}</strong></td>
+                  <td><strong>${(shippingMethod === 'pallet' ? (shipmentResult.pallets?.reduce((sum, p) => sum + p.weight, 0) || 0) : totalBoxesWeight).toFixed(2)}</strong></td>
                 </tr>
               </tbody>
             </table>

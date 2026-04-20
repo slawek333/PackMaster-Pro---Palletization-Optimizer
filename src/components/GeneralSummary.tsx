@@ -107,7 +107,7 @@ export const GeneralSummary = ({
           <div className="flex-1">
             <div className="font-black text-xl flex items-center gap-3 tracking-tight">
               Pallet Stability: {isStable ? 'Optimal' : 'Attention Required'}
-              {isStable && <span className="text-[10px] bg-emerald-600 text-white px-3 py-1 rounded-full uppercase tracking-widest ml-2 font-black">Verified</span>}
+              {isStable && <span className="text-[10px] bg-emerald-600 text-white px-3 py-1 rounded-full uppercase tracking-widest ml-2 font-black">Optimal / Verified</span>}
             </div>
             {allWarnings.length > 0 ? (
               <ul className="mt-3 space-y-2">
@@ -119,7 +119,7 @@ export const GeneralSummary = ({
                 ))}
               </ul>
             ) : (
-              <p className="text-sm font-bold text-emerald-700/80 mt-2">All boxes are perfectly balanced and supported across all layers.</p>
+              <p className="text-sm font-bold text-emerald-700/80 mt-2">All boxes are perfectly balanced and 100% supported across all layers using professional geometric validation.</p>
             )}
           </div>
         </div>
@@ -141,8 +141,22 @@ export const GeneralSummary = ({
         
         <div className="flex items-center gap-2 px-4 py-2 bg-zinc-50 text-zinc-700 rounded-xl text-[10px] font-bold border border-zinc-100 shadow-sm">
           <LayoutGrid size={14} className="text-zinc-400" />
-          GRID OPTIMIZATION: ENABLED
+          GEOMETRIC VALIDATION: ACTIVE
         </div>
+
+        {result.layerCount !== undefined && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-zinc-50 text-zinc-700 rounded-xl text-[10px] font-bold border border-zinc-100 shadow-sm">
+            <Layers size={14} className="text-zinc-400" />
+            LAYERS: {result.layerCount}
+          </div>
+        )}
+
+        {result.palletFloorAreaUtilization !== undefined && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-zinc-50 text-zinc-700 rounded-xl text-[10px] font-bold border border-zinc-100 shadow-sm">
+            <LayoutGrid size={14} className="text-zinc-400" />
+            FLOOR UTILIZATION: {(result.palletFloorAreaUtilization * 100).toFixed(1)}%
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
@@ -191,7 +205,9 @@ export const GeneralSummary = ({
           <div className="text-4xl font-bold text-zinc-900 tracking-tighter">
             {((isCourier ? result.boxVolumeUtilization : result.palletVolumeUtilization) * 100).toFixed(1)} <span className="text-xl text-zinc-400 ml-1">%</span>
           </div>
-          <div className="mt-2 text-[9px] font-bold text-zinc-400 uppercase tracking-widest">Volume Efficiency</div>
+          <div className="mt-2 text-[9px] font-bold text-zinc-400 uppercase tracking-widest">
+            {isCourier ? 'Box Volume Efficiency' : 'Pallet Fill Ratio (Vol)'}
+          </div>
         </div>
       </div>
 
